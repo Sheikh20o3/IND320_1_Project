@@ -1,10 +1,10 @@
 import streamlit as st
 import pandas as pd
-import matplotlib.pyplot as plt
+import plotly.express as px
 from utils import load_data
 
 st.set_page_config(page_title="Plot", page_icon="📈", layout="wide")
-st.title("Plott av data")
+st.title("Plott av data (Plotly)")
 
 # Last data (med caching i utils.load_data)
 df = load_data()
@@ -26,36 +26,33 @@ if not num_cols:
     st.error("Fant ingen numeriske kolonner å plotte.")
     st.stop()
 
-# Velg kolonne(r) via selectbox
+# Velg kolonne(r)
 choice = st.selectbox("Velg kolonne(r) å plotte", ["All columns"] + num_cols, index=0)
 
-# Velg månedsspenn via select_slider (default: første måned)
+# Velg månedsspenn (default: første måned)
 if "month" in df.columns and df["month"].notna().any():
     months = sorted(df["month"].dropna().unique().tolist())
-    start, end = st.select_slider(
-        "Velg måned(er)",
-        options=months,
-        value=(months[0], months[0])  # default: første måned
-    )
+    start, end = st.select_slider("Velg måned(er)", options=months, value=(months[0], months[0]))
     mask = (df["month"] >= start) & (df["month"] <= end)
     pdf = df.loc[mask].copy()
+    subtitle = f"Måneder: {start} → {end}"
 else:
-    st.info("Fant ikke 'month'-kolonne – viser alle rader.")
     pdf = df.copy()
+    subtitle = "Alle rader"
 
-# Lag plott
-fig, ax = plt.subplots()
-ax.grid(True, alpha=0.3)
-ax.set_title("Tidsserie")
-ax.set_xlabel("Dato")
-ax.set_ylabel("Verdi")
-
+# Plotly-figur
 if choice == "All columns":
-    for c in num_cols:
-        ax.plot(pdf[date_col], pdf[c], label=c)
-    ax.legend(loc="best", frameon=False)
+    long_df = pdf[[date_col] + num_cols].melt(id_vars=date_col, var_name="variable", value_name="value")
+    fig = px.line(
+        long_df, x=date_col, y="value", color="variable",
+        title=f"Tidsserie – {subtitle}",
+        labels={date_col: "Dato", "value": "Verdi", "variable": "Kolonne"},
+    )
 else:
-    ax.plot(pdf[date_col], pdf[choice], label=choice)
-    ax.legend(loc="best", frameon=False)
+    fig = px.line(
+        pdf, x=date_col, y=choice,
+        title=f"Tidsserie – {choice} – {subtitle}",
+        labels={date_col: "Dato", choice: "Verdi"},
+    )
 
-st.pyplot(fig, clear_figure=True)
+st.plotly_chart(fig, use_container_width=True)
