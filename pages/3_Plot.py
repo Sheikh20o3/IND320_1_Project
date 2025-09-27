@@ -4,55 +4,52 @@ import plotly.express as px
 from utils import load_data
 
 st.set_page_config(page_title="Plot", page_icon="📈", layout="wide")
-st.title("Plott av data (Plotly)")
+st.title("Data plot (Plotly)")
 
-# Last data (med caching i utils.load_data)
+# Load data (cached in utils.load_data)
 df = load_data()
 
-# Finn dato-/tid-kolonne
+# Find a date/time-like column
 date_cols = [c for c in df.columns if any(k in c.lower() for k in ["date", "time", "datetime", "timestamp"])]
 date_col = date_cols[0] if date_cols else None
 if date_col is None:
-    st.error("Fant ingen dato-/tid-kolonne – kan ikke lage tidsserie.")
+    st.error("No date/time column found - cannot build a time series.")
     st.stop()
 
-# Sørg for datetime-type
+# Ensure datetime dtype
 if not pd.api.types.is_datetime64_any_dtype(df[date_col]):
     df[date_col] = pd.to_datetime(df[date_col], errors="coerce")
 
-# Numeriske kolonner
+# Numeric columns
 num_cols = [c for c in df.columns if pd.api.types.is_numeric_dtype(df[c])]
 if not num_cols:
-    st.error("Fant ingen numeriske kolonner å plotte.")
+    st.error("No numeric columns found to plot.")
     st.stop()
 
-# Velg kolonne(r)
-choice = st.selectbox("Velg kolonne(r) å plotte", ["All columns"] + num_cols, index=0)
+# Select column(s) to plot
+choice = st.selectbox("Select column(s) to plot", ["All columns"] + num_cols, index=0)
 
-# Velg månedsspenn (default: første måned)
+# Select month range (default: first month)
 if "month" in df.columns and df["month"].notna().any():
     months = sorted(df["month"].dropna().unique().tolist())
-    start, end = st.select_slider("Velg måned(er)", options=months, value=(months[0], months[0]))
+    default_month = months[0]
+    start, end = st.select_slider("Select month(s)", options=months, value=(default_month, default_month))
     mask = (df["month"] >= start) & (df["month"] <= end)
     pdf = df.loc[mask].copy()
-    subtitle = f"Måneder: {start} → {end}"
+    subtitle = f"Months: {start} to {end}"
 else:
     pdf = df.copy()
-    subtitle = "Alle rader"
+    subtitle = "All rows"
 
-# Plotly-figur
+# Build Plotly figure
 if choice == "All columns":
-    long_df = pdf[[date_col] + num_cols].melt(id_vars=date_col, var_name="variable", value_name="value")
-    fig = px.line(
-        long_df, x=date_col, y="value", color="variable",
-        title=f"Tidsserie – {subtitle}",
-        labels={date_col: "Dato", "value": "Verdi", "variable": "Kolonne"},
-    )
+    long_df = pdf[[date_col] + num_cols].melt(id_vars=date_col, var_name="column", value_name="value")
+    fig = px.line(long_df, x=date_col, y="value", color="column",
+                  title=f"Time series - {subtitle}",
+                  labels={date_col: "Date", "value": "Value", "column": "Column"})
 else:
-    fig = px.line(
-        pdf, x=date_col, y=choice,
-        title=f"Tidsserie – {choice} – {subtitle}",
-        labels={date_col: "Dato", choice: "Verdi"},
-    )
+    fig = px.line(pdf, x=date_col, y=choice,
+                  title=f"Time series - {choice} - {subtitle}",
+                  labels={date_col: "Date", choice: "Value"})
 
 st.plotly_chart(fig, use_container_width=True)
