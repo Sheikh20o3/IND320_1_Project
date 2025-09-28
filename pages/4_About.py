@@ -1,7 +1,8 @@
-import streamlit as st
 
-st.set_page_config(page_title="About", page_icon="ℹ️")
-st.title("About this app")
+import streamlit as st # Imports the Streamlit library.
+
+st.set_page_config(page_title="About", page_icon="ℹ️") # Configures the browser tab title 
+st.title("About this app") # Displays the main title 
 
 st.markdown("""
 **In short:** A small, multi-page Streamlit app for exploring the `open-meteo-subset.csv` dataset.
