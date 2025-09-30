@@ -1,10 +1,15 @@
 import streamlit as st
 import pandas as pd
 import plotly.express as px
-from utils import load_data
 
 st.set_page_config(page_title="Plot", page_icon="📈", layout="wide") # Sets the page configuration to use a wide layout for the chart.
 st.title("Data plot (Plotly)") # Displays the main header 
+
+
+def load_data():
+    # Bytt ut stien med der CSV-en faktisk ligger
+    return pd.read_csv("/Users/a.h.sheikh/Desktop/IND320_Git_Job/IND320_1_Project/open-meteo-subset.csv")
+#from utils import load_data
 
 # Load data (cached in utils.load_data)
 df = load_data() # Loads the full dataset, 
