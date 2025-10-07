@@ -1,101 +1,25 @@
-commit 8d648f49dda7a8f7cdc2245ec4fd1683c50b55a8
-Author: A H Sheikh <abdulhaadi0307@outlook.com>
-Date:   Sun Sep 28 15:52:27 2025 +0200
+Repo: git@github.com:Sheikh20o3/IND320_1_Project.git
+Branch: main
+Generert: 2025-09-30 14:23:10 CEST
 
-    Updated notebooks to use %run utils.ipynb instead of Python import
-
-commit 48b3fa002191feaf33663213b0d59dfc931f0454
-Author: A H Sheikh <abdulhaadi0307@outlook.com>
-Date:   Sun Sep 28 13:29:54 2025 +0200
-
-    Fix requirements.txt for Streamlit Cloud
-
-commit e400a3e3096a22328b2f430004d8430c2441c84e
-Author: A H Sheikh <abdulhaadi0307@outlook.com>
-Date:   Sun Sep 28 13:24:39 2025 +0200
-
-    Fix utils.py to use relative path for CSV
-
-commit 0f65672a2d2cb35eccf7b9db38d81555d995c5de
-Author: A H Sheikh <abdulhaadi0307@outlook.com>
-Date:   Sun Sep 28 13:07:19 2025 +0200
-
-    Added dataset CSV and restored pages folder for Streamlit Cloud
-
-commit 6df06323461364c603bbc41d57f46a8934aa4070
-Author: A H Sheikh <abdulhaadi0307@outlook.com>
-Date:   Sun Sep 28 12:58:46 2025 +0200
-
-    Moved streamlit_app.py and utils.py back to root for Streamlit Cloud
-
-commit 675022ad96aeb6c58bf3f35bc99240ba632dca3a
-Author: A H Sheikh <abdulhaadi0307@outlook.com>
-Date:   Sun Sep 28 12:47:40 2025 +0200
-
-    Moved all notebooks and utils.ipynb into same folder, updated imports with %run
-
-commit d8d24508f1d961d6bda03b82f12985bc65e9a7ca
-Author: A H Sheikh <abdulhaadi0307@outlook.com>
-Date:   Sun Sep 28 12:08:22 2025 +0200
-
-    Restored .py files for Streamlit app (misunderstanding, thought only .ipynb were needed)
-
-commit 73fe7c2d3bf785ce4315bc3cba663a7df97026e9
-Author: A H Sheikh <abdulhaadi0307@outlook.com>
-Date:   Sun Sep 28 11:40:49 2025 +0200
-
-    Added Jupytext notebooks (.ipynb) synced with .py files
-
-commit 6b670908e279478d2e858de8f0e233ce109c6a18
-Author: A H Sheikh <abdulhaadi0307@outlook.com>
-Date:   Sat Sep 27 14:54:55 2025 +0200
-
-    Translate UI to English + clean Plot page (Plotly)
-
-commit f949bc137ceffe9a28278f4ea27f82ad6f152180
-Author: A H Sheikh <abdulhaadi0307@outlook.com>
-Date:   Mon Sep 22 14:09:26 2025 +0200
-
-    Switch plotting to Plotly (teacher feedback)
-
-commit 3a886016f52c217abae725e35b45c36172238ac5
-Author: A H Sheikh <abdulhaadi0307@outlook.com>
-Date:   Thu Sep 18 17:21:24 2025 +0200
-
-    Fix Plot page: clean code, selectbox & select_slider
-
-commit f5391170675007acabc765300a853eeb7aed4fe5
-Author: A H Sheikh <abdulhaadi0307@outlook.com>
-Date:   Thu Sep 18 17:07:52 2025 +0200
-
-    Slette tester filer
-
-commit 8584a775ba6ab675ea3be3fbc0a3b24748e9c3ef
-Author: A H Sheikh <abdulhaadi0307@outlook.com>
-Date:   Thu Sep 18 15:03:25 2025 +0200
-
-    Add multi-page Streamlit app (home + pages), utils, requirements, data
-
-commit 2d46512af22cd8961058bd7cdef500499b3c0cd9
-Author: A H Sheikh <abdulhaadi0307@outlook.com>
-Date:   Thu Sep 18 12:24:44 2025 +0200
-
-    Update streamlit app
-
-commit ae6414947069f7ad601ce34ba84bed180c116419
-Author: A H Sheikh <abdulhaadi0307@outlook.com>
-Date:   Thu Sep 18 12:19:58 2025 +0200
-
-    streamlit_app.py
-
-commit 30be7508a30b70f77c75245dc7d512787cac5a27
-Author: A H Sheikh <abdulhaadi0307@outlook.com>
-Date:   Thu Sep 18 11:20:48 2025 +0200
-
-    Add Funker_Nye.py
-
-commit 8a7ab483f4b9c559a864cb73d2811e34703ea2b0
-Author: A H Sheikh <abdulhaadi0307@outlook.com>
-Date:   Thu Sep 18 10:47:11 2025 +0200
-
-    Initial commit
+9ed89f5 2025-09-30 | A H Sheikh | IND320: oppdaterer Streamlit + utils; notebook-eksport
+0f8fbc9 2025-09-30 | A H Sheikh | Added all plots in notebook, updated explanations, and included Git log export
+3451f44 2025-09-29 | A H Sheikh | La til requirements.txt for Streamlit Cloud
+c96c5b5 2025-09-28 | A H Sheikh | La til commits_github.txt i Innlevering og IPYNB
+8d648f4 2025-09-28 | A H Sheikh | Updated notebooks to use %run utils.ipynb instead of Python import
+48b3fa0 2025-09-28 | A H Sheikh | Fix requirements.txt for Streamlit Cloud
+e400a3e 2025-09-28 | A H Sheikh | Fix utils.py to use relative path for CSV
+0f65672 2025-09-28 | A H Sheikh | Added dataset CSV and restored pages folder for Streamlit Cloud
+6df0632 2025-09-28 | A H Sheikh | Moved streamlit_app.py and utils.py back to root for Streamlit Cloud
+675022a 2025-09-28 | A H Sheikh | Moved all notebooks and utils.ipynb into same folder, updated imports with %run
+d8d2450 2025-09-28 | A H Sheikh | Restored .py files for Streamlit app (misunderstanding, thought only .ipynb were needed)
+73fe7c2 2025-09-28 | A H Sheikh | Added Jupytext notebooks (.ipynb) synced with .py files
+6b67090 2025-09-27 | A H Sheikh | Translate UI to English + clean Plot page (Plotly)
+f949bc1 2025-09-22 | A H Sheikh | Switch plotting to Plotly (teacher feedback)
+3a88601 2025-09-18 | A H Sheikh | Fix Plot page: clean code, selectbox & select_slider
+f539117 2025-09-18 | A H Sheikh | Slette tester filer
+8584a77 2025-09-18 | A H Sheikh | Add multi-page Streamlit app (home + pages), utils, requirements, data
+2d46512 2025-09-18 | A H Sheikh | Update streamlit app
+ae64149 2025-09-18 | A H Sheikh | streamlit_app.py
+30be750 2025-09-18 | A H Sheikh | Add Funker_Nye.py
+8a7ab48 2025-09-18 | A H Sheikh | Initial commit
