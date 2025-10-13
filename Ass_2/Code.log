@@ -1,0 +1,48 @@
+[Running] python -u "/Users/a.h.sheikh/Desktop/IND320_Git_Job/IND320_1_Project/Ass_2/mongo_test.py"
+Traceback (most recent call last):
+  File "/Users/a.h.sheikh/Desktop/IND320_Git_Job/IND320_1_Project/Ass_2/mongo_test.py", line 11, in <module>
+    res = col.insert_one(doc)
+          ^^^^^^^^^^^^^^^^^^^
+  File "/Users/a.h.sheikh/.pyenv/versions/ind320/lib/python3.12/site-packages/pymongo/synchronous/collection.py", line 891, in insert_one
+    self._insert_one(
+  File "/Users/a.h.sheikh/.pyenv/versions/ind320/lib/python3.12/site-packages/pymongo/synchronous/collection.py", line 831, in _insert_one
+    self._database.client._retryable_write(
+  File "/Users/a.h.sheikh/.pyenv/versions/ind320/lib/python3.12/site-packages/pymongo/synchronous/mongo_client.py", line 2082, in _retryable_write
+    return self._retry_with_session(retryable, func, s, bulk, operation, operation_id)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/a.h.sheikh/.pyenv/versions/ind320/lib/python3.12/site-packages/pymongo/synchronous/mongo_client.py", line 1968, in _retry_with_session
+    return self._retry_internal(
+           ^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/a.h.sheikh/.pyenv/versions/ind320/lib/python3.12/site-packages/pymongo/_csot.py", line 125, in csot_wrapper
+    return func(self, *args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/a.h.sheikh/.pyenv/versions/ind320/lib/python3.12/site-packages/pymongo/synchronous/mongo_client.py", line 2014, in _retry_internal
+    ).run()
+      ^^^^^
+  File "/Users/a.h.sheikh/.pyenv/versions/ind320/lib/python3.12/site-packages/pymongo/synchronous/mongo_client.py", line 2765, in run
+    return self._read() if self._is_read else self._write()
+                                              ^^^^^^^^^^^^^
+  File "/Users/a.h.sheikh/.pyenv/versions/ind320/lib/python3.12/site-packages/pymongo/synchronous/mongo_client.py", line 2875, in _write
+    self._server = self._get_server()
+                   ^^^^^^^^^^^^^^^^^^
+  File "/Users/a.h.sheikh/.pyenv/versions/ind320/lib/python3.12/site-packages/pymongo/synchronous/mongo_client.py", line 2858, in _get_server
+    return self._client._select_server(
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/a.h.sheikh/.pyenv/versions/ind320/lib/python3.12/site-packages/pymongo/synchronous/mongo_client.py", line 1833, in _select_server
+    server = topology.select_server(
+             ^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/a.h.sheikh/.pyenv/versions/ind320/lib/python3.12/site-packages/pymongo/synchronous/topology.py", line 409, in select_server
+    server = self._select_server(
+             ^^^^^^^^^^^^^^^^^^^^
+  File "/Users/a.h.sheikh/.pyenv/versions/ind320/lib/python3.12/site-packages/pymongo/synchronous/topology.py", line 387, in _select_server
+    servers = self.select_servers(
+              ^^^^^^^^^^^^^^^^^^^^
+  File "/Users/a.h.sheikh/.pyenv/versions/ind320/lib/python3.12/site-packages/pymongo/synchronous/topology.py", line 294, in select_servers
+    server_descriptions = self._select_servers_loop(
+                          ^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/a.h.sheikh/.pyenv/versions/ind320/lib/python3.12/site-packages/pymongo/synchronous/topology.py", line 344, in _select_servers_loop
+    raise ServerSelectionTimeoutError(
+pymongo.errors.ServerSelectionTimeoutError: SSL handshake failed: ac-rwo14jx-shard-00-02.qh8rsrb.mongodb.net:27017: [SSL: TLSV1_ALERT_INTERNAL_ERROR] tlsv1 alert internal error (_ssl.c:1000) (configured timeouts: socketTimeoutMS: 20000.0ms, connectTimeoutMS: 20000.0ms),SSL handshake failed: ac-rwo14jx-shard-00-01.qh8rsrb.mongodb.net:27017: [SSL: TLSV1_ALERT_INTERNAL_ERROR] tlsv1 alert internal error (_ssl.c:1000) (configured timeouts: socketTimeoutMS: 20000.0ms, connectTimeoutMS: 20000.0ms),SSL handshake failed: ac-rwo14jx-shard-00-00.qh8rsrb.mongodb.net:27017: [SSL: TLSV1_ALERT_INTERNAL_ERROR] tlsv1 alert internal error (_ssl.c:1000) (configured timeouts: socketTimeoutMS: 20000.0ms, connectTimeoutMS: 20000.0ms), Timeout: 30s, Topology Description: <TopologyDescription id: 68ecb87c960c971f487fffd1, topology_type: ReplicaSetNoPrimary, servers: [<ServerDescription ('ac-rwo14jx-shard-00-00.qh8rsrb.mongodb.net', 27017) server_type: Unknown, rtt: None, error=AutoReconnect('SSL handshake failed: ac-rwo14jx-shard-00-00.qh8rsrb.mongodb.net:27017: [SSL: TLSV1_ALERT_INTERNAL_ERROR] tlsv1 alert internal error (_ssl.c:1000) (configured timeouts: socketTimeoutMS: 20000.0ms, connectTimeoutMS: 20000.0ms)')>, <ServerDescription ('ac-rwo14jx-shard-00-01.qh8rsrb.mongodb.net', 27017) server_type: Unknown, rtt: None, error=AutoReconnect('SSL handshake failed: ac-rwo14jx-shard-00-01.qh8rsrb.mongodb.net:27017: [SSL: TLSV1_ALERT_INTERNAL_ERROR] tlsv1 alert internal error (_ssl.c:1000) (configured timeouts: socketTimeoutMS: 20000.0ms, connectTimeoutMS: 20000.0ms)')>, <ServerDescription ('ac-rwo14jx-shard-00-02.qh8rsrb.mongodb.net', 27017) server_type: Unknown, rtt: None, error=AutoReconnect('SSL handshake failed: ac-rwo14jx-shard-00-02.qh8rsrb.mongodb.net:27017: [SSL: TLSV1_ALERT_INTERNAL_ERROR] tlsv1 alert internal error (_ssl.c:1000) (configured timeouts: socketTimeoutMS: 20000.0ms, connectTimeoutMS: 20000.0ms)')>]>
+
+[Done] exited with code=1 in 31.766 seconds
+
