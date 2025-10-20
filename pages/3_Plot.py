@@ -1,60 +1,75 @@
+# pages/3_Plot.py
 import streamlit as st
 import pandas as pd
+import numpy as np
+from pathlib import Path
 import plotly.express as px
 
-st.set_page_config(page_title="Plot", page_icon="📈", layout="wide") # Sets the page configuration to use a wide layout for the chart.
-st.title("Data plot (Plotly)") # Displays the main header 
+st.set_page_config(page_title="Data plot (Plotly)", page_icon="📈", layout="wide")
+st.title("Data plot (Plotly)")
 
-
+@st.cache_data
 def load_data():
-    # Bytt ut stien med der CSV-en faktisk ligger
-    return pd.read_csv("/Users/a.h.sheikh/Desktop/IND320_Git_Job/IND320_1_Project/open-meteo-subset.csv")
-#from utils import load_data
+    """
+    Prøv å finne open-meteo-subset.csv i repoet.
+    Hvis ikke – lag trygge demo-data, så siden aldri krasjer i skyen.
+    """
+    here = Path(__file__).resolve()
+    candidates = [
+        here.parent.parent / "open-meteo-subset.csv",      # prosjektrot
+        here.parent / "open-meteo-subset.csv",             # /pages
+        Path.cwd() / "open-meteo-subset.csv",              # kjøremappe
+        Path("open-meteo-subset.csv"),                     # relativt fallback
+    ]
+    for p in candidates:
+        if p.exists():
+            df = pd.read_csv(p)
+            return df, f"Lest fra: {p}"
 
-# Load data (cached in utils.load_data)
-df = load_data() # Loads the full dataset, 
+    # Fallback: generér en liten demo-dataserie
+    idx = pd.date_range("2021-01-01", periods=24*7, freq="H")
+    rng = np.random.default_rng(42)
+    df = pd.DataFrame({
+        "time": idx,
+        "temp": 5 + rng.normal(0, 1, size=len(idx)).cumsum() / 10,
+        "wind": rng.normal(0, 1, size=len(idx)).cumsum() / 10,
+    })
+    return df, "Demo-data (CSV ikke funnet i repo)"
 
-# Find a date/time-like column
-date_cols = [c for c in df.columns if any(k in c.lower() for k in ["date", "time", "datetime", "timestamp"])] # Finds column names that indicate time series data.
-date_col = date_cols[0] if date_cols else None
-if date_col is None: # Checks if a primary time column was successfully identified.
-    st.error("No date/time column found - cannot build a time series.") # Displays an error if the X-axis data is missing.
-    st.stop() # Halts execution since the core plot cannot be generated.
+df, source = load_data()
+st.caption(source)
 
-# Ensure datetime dtype
-if not pd.api.types.is_datetime64_any_dtype(df[date_col]):
-    df[date_col] = pd.to_datetime(df[date_col], errors="coerce") # Converts the time column to the required datetime object type.
+# Finn tidskolonne og numeriske kolonner
+date_cols = [c for c in df.columns
+             if pd.api.types.is_datetime64_any_dtype(df[c])
+             or any(k in c.lower() for k in ["time", "date", "datetime", "timestamp"])]
 
-# Numeric columns
-num_cols = [c for c in df.columns if pd.api.types.is_numeric_dtype(df[c])] # Filters the columns to find all available numeric data for plotting.
+if date_cols:
+    tcol = date_cols[0]
+    if not pd.api.types.is_datetime64_any_dtype(df[tcol]):
+        # Prøv å parse til datetime om nødvendig
+        df[tcol] = pd.to_datetime(df[tcol], errors="coerce")
+
+num_cols = [c for c in df.columns if pd.api.types.is_numeric_dtype(df[c])]
+
 if not num_cols:
-    st.error("No numeric columns found to plot.") # Displays an error if there are no Y-axis.
-    st.stop() # Stops execution.
+    st.error("Fant ingen numeriske kolonner å plotte.")
+    st.stop()
 
-# Select columns to plot
-choice = st.selectbox("Select column(s) to plot", ["All columns"] + num_cols, index=0) # Creates an interactive dropdown menu for column selection.
+# Velg serier
+default_sel = num_cols[:2] if len(num_cols) >= 2 else [num_cols[0]]
+ycols = st.multiselect("Velg måleserier", options=num_cols, default=default_sel)
 
-# Select month range 
-if "month" in df.columns and df["month"].notna().any(): # Checks for the pre-calculated 'month' column 
-    months = sorted(df["month"].dropna().unique().tolist())
-    default_month = months[0]
-    start, end = st.select_slider("Select month(s)", options=months, value=(default_month, default_month)) # Creates an interactive slider 
-    mask = (df["month"] >= start) & (df["month"] <= end) 
-    pdf = df.loc[mask].copy() 
-    subtitle = f"Months: {start} to {end}"
+if date_cols:
+    tcol = date_cols[0]
+    st.info(f"Tidskolonne: **{tcol}**")
+    melt = df[[tcol] + ycols].melt(id_vars=tcol, var_name="series", value_name="value")
+    fig = px.line(melt, x=tcol, y="value", color="series", title="Tidsserie")
+    # Streamlit varsler om deprecations for use_container_width på dataframe.
+    # For plotly går det fint å beholde enn så lenge:
+    st.plotly_chart(fig, use_container_width=True)
 else:
-    pdf = df.copy() # Uses the entire dataset if no 'month' column exists.
-    subtitle = "All rows"
-
-# Build Plotly figure
-if choice == "All columns": # Executes the logic for plotting multiple series.
-    long_df = pdf[[date_col] + num_cols].melt(id_vars=date_col, var_name="column", value_name="value") # Pivots the table from wide to long format, which Plotly requires for multi-line plots.
-    fig = px.line(long_df, x=date_col, y="value", color="column", # Creates the Plotly line chart with multiple colored lines.
-                  title=f"Time series - {subtitle}",
-                  labels={date_col: "Date", "value": "Value", "column": "Column"})
-else: # Executes the logic for plotting a single series.
-    fig = px.line(pdf, x=date_col, y=choice, # Creates a standard Plotly line chart for the selected column.
-                  title=f"Time series - {choice} - {subtitle}",
-                  labels={date_col: "Date", choice: "Value"})
-
-st.plotly_chart(fig, use_container_width=True) # Renders the Plotly figure within the Streamlit app, adjusting to the container width. allowing for fast reloading on subsequent accesses.
+    # Uten tid: vis histogram av første valgte kolonne
+    col = ycols[0]
+    fig = px.histogram(df, x=col, nbins=50, title=f"Histogram av {col}")
+    st.plotly_chart(fig, use_container_width=True)
