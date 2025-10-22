@@ -10,16 +10,16 @@ import pymongo
 import streamlit as st
 
 
-# ---- Mongo tilkobling --------------------------------------------------------
-
+#  Mongo connection 
 def _get_uri() -> str:
     """
-    Henter MongoDB-URI fra Streamlit secrets eller miljøvariabel.
+    Fetch the MongoDB URI from Streamlit secrets or from the environment variable.
     """
     if hasattr(st, "secrets") and "MONGODB_URI" in st.secrets:
         return st.secrets["MONGODB_URI"]
     uri = os.getenv("MONGODB_URI")
     if not uri:
+        # Keep message text as-is (Norwegian) to avoid changing runtime-facing strings
         raise RuntimeError(
             "MONGODB_URI mangler. Legg den i .streamlit/secrets.toml eller miljøvariabel."
         )
@@ -29,26 +29,27 @@ def _get_uri() -> str:
 @st.cache_resource(show_spinner=False)
 def get_client() -> pymongo.MongoClient:
     """
-    Oppretter en global MongoClient med riktig TLS-oppsett.
-    Validerer også tilkoblingen med ping().
+    Create a global MongoClient with proper TLS settings.
+    Also validates the connection with `ping()`.
     """
     uri = _get_uri()
     client = pymongo.MongoClient(uri, serverSelectionTimeoutMS=30_000)
-    # Liten sanity check – kaster exception hvis noe er feil
+    # Light sanity check — raises if the connection is invalid/misconfigured
     client.admin.command("ping")
     return client
 
 
 def _coll(db: str = "elhub", coll: str = "production_2021_by_hour") -> pymongo.collection.Collection:
+    # Convenience accessor: return a handle to the desired collection
     return get_client()[db][coll]
 
 
-# ---- Listevalg til UI --------------------------------------------------------
-
+#  List choices for the UI 
 @st.cache_data(ttl=300, show_spinner=False)
 def list_price_areas(db_name: str = "elhub", coll_name: str = "production_2021_by_hour") -> List[str]:
     """
-    Distinct liste over priceArea, sortert.
+    Return a distinct, sorted list of `priceArea` values.
+    Cached for 300s to reduce round-trips to MongoDB.
     """
     c = _coll(db_name, coll_name)
     res = c.aggregate([
@@ -63,7 +64,8 @@ def list_price_areas(db_name: str = "elhub", coll_name: str = "production_2021_b
 def list_groups(price_area: Optional[str] = None,
                 db_name: str = "elhub", coll_name: str = "production_2021_by_hour") -> List[str]:
     """
-    Distinct liste over productionGroup, globalt eller filtrert på price_area.
+    Return a distinct, sorted list of `productionGroup` values,
+    optionally filtered by a given `price_area`.
     """
     c = _coll(db_name, coll_name)
     pipeline = []
@@ -78,14 +80,13 @@ def list_groups(price_area: Optional[str] = None,
     return [d["productionGroup"] for d in res]
 
 
-# ---- Data til figurer --------------------------------------------------------
-
+#  Data for charts 
 @st.cache_data(ttl=300, show_spinner=False)
 def fetch_pie_df(price_area: str,
                  db_name: str = "elhub", coll_name: str = "production_2021_by_hour") -> pd.DataFrame:
     """
-    Summerer total produksjon per gruppe i 2021 for valgt prisområde.
-    Returnerer DataFrame: columns = ['productionGroup', 'quantityKwh'].
+    Sum total production per group in 2021 for the selected price area.
+    Returns a DataFrame with columns: ['productionGroup', 'quantityKwh'].
     """
     if not price_area:
         return pd.DataFrame(columns=["productionGroup", "quantityKwh"])
@@ -110,7 +111,8 @@ def fetch_pie_df(price_area: str,
 
 def _month_bounds(year: int, month: int) -> tuple[datetime, datetime]:
     """
-    Lager [start, end) grenser i UTC for en måned.
+    Build [start, end) UTC bounds for a given month.
+    Note: raises ValueError on invalid month; message kept in Norwegian to avoid changing user-facing text.
     """
     if month < 1 or month > 12:
         raise ValueError("month må være 1..12")
@@ -130,9 +132,12 @@ def fetch_line_df(price_area: str,
                   db_name: str = "elhub",
                   coll_name: str = "production_2021_by_hour") -> pd.DataFrame:
     """
-    Henter time-serie for valgt måned/prisområde og (valgte) grupper.
-    Returnerer DataFrame med kolonner: startTime (datetime64[ns, UTC]),
-    productionGroup, quantityKwh – sortert på tid stigende.
+    Fetch a time series for the selected month/price area and (optionally) selected groups.
+    Returns a DataFrame with columns:
+      - startTime (datetime64[ns, UTC])
+      - productionGroup
+      - quantityKwh
+    The rows are sorted ascending by time.
     """
     if not price_area:
         return pd.DataFrame(columns=["startTime", "productionGroup", "quantityKwh"])
@@ -160,7 +165,7 @@ def fetch_line_df(price_area: str,
         return pd.DataFrame(columns=["startTime", "productionGroup", "quantityKwh"])
 
     df = pd.DataFrame(rows)
-    # Sørg for tz-aware i pandas
+    # Ensure tz-aware datetimes in pandas (required for consistent plotting/merging)
     df["startTime"] = pd.to_datetime(df["startTime"], utc=True)
-    # Vi trenger bare disse kolonnene videre i plott
+    # We only need these columns downstream for charts
     return df[["startTime", "productionGroup", "quantityKwh"]]

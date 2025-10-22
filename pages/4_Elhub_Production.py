@@ -11,63 +11,80 @@ from utils_elhub import (
     fetch_line_df,
 )
 
-st.title("Elhub Production – 2021")
+st.title("Elhub Production – 2021")  # Page title
 
-# --- UI: prisområdevalg (radio i venstre kolonne) ---
+
+# (Duplicate imports below are kept intentionally; not modifying code structure)
+import streamlit as st
+from utils_elhub import get_client
+
+# Test the MongoDB connection and show status in the UI
+with st.status("Testing MongoDB connection", expanded=False):
+    try:
+        cli = get_client()
+        cnt = cli["elhub"]["production_2021_by_hour"].count_documents({})
+        st.success(f"Connected to MongoDB ✅  Documentation: {cnt:,}")
+    except Exception as e:
+        st.error("Can not se that it is connected to MongoDB.")
+        st.exception(e)
+        st.stop()
+
+
+# --- UI: price area selection (radio in left column) ---
 areas = list_price_areas()
 if not areas:
-    st.error("Fant ingen priceArea i MongoDB. Sjekk at du har lastet inn data til elhub.production_2021_by_hour.")
+    st.error("Didn't find any priceArea in MongoDB. Check that you have loaded data into elhub.production_2021_by_hour.")
     st.stop()
 
 left, right = st.columns(2)
 
 with left:
-    area = st.radio("Velg prisområde:", areas, index=0, horizontal=True)
+    area = st.radio("Select the price area", areas, index=0, horizontal=True)
 
-    # Hent data for pie
+    # Fetch data for the pie chart
     pie_df = fetch_pie_df(area).copy()
 
-    # Failsafe: noen eldre varianter kan ha 'totalKwh'
+    # Failsafe: some earlier variants may have 'totalKwh' instead of 'quantityKwh'
     if "totalKwh" in pie_df.columns and "quantityKwh" not in pie_df.columns:
         pie_df.rename(columns={"totalKwh": "quantityKwh"}, inplace=True)
 
     if pie_df.empty:
-        st.info(f"Ingen data for {area}.")
+        st.info(f"No data for {area}.")
     else:
-        # Viktig: values må matche kolonnenavnet i DataFrame
+        # Important: 'values' must match an existing column in the DataFrame
         fig = px.pie(
             pie_df,
             values="quantityKwh",
             names="productionGroup",
             hole=0.0,
-            title=f"Total produksjon 2021 – {area}",
+            title=f"Total production 2021 – {area}",
         )
         fig.update_traces(textposition="inside", textinfo="percent+label")
         st.plotly_chart(fig, use_container_width=True)
 
 with right:
-    # Groups-pills (default: alle valgt)
+    # Group selection as "pills" (default: all selected)
     all_groups = list_groups(price_area=area)
-    # st.pills finnes i nye Streamlit-versjoner – fallback til multiselect hvis ikke
+    # st.pills exists in newer Streamlit versions — fall back to multiselect if unavailable
     try:
-        selected_groups = st.pills("Velg produksjonsgrupper:", options=all_groups, default=all_groups)
+        selected_groups = st.pills("Select production groups:", options=all_groups, default=all_groups)
         if selected_groups is None:
             selected_groups = all_groups
     except Exception:
-        selected_groups = st.multiselect("Velg produksjonsgrupper:", options=all_groups, default=all_groups)
+        selected_groups = st.multiselect("Select production groups:", options=all_groups, default=all_groups)
 
-    # Velg måned
+    # Select month
     month_names = [calendar.month_name[m] for m in range(1, 13)]
-    mlabel = st.selectbox("Velg måned:", options=month_names, index=0)
+    mlabel = st.selectbox("Choose month:", options=month_names, index=0)
     month = month_names.index(mlabel) + 1
 
-    # Hent timeserie for valgt måned
+    # Fetch time series for the selected month and groups
     line_df = fetch_line_df(area, selected_groups, month, year=2021).copy()
 
     if line_df.empty:
-        st.info(f"Ingen data for {area} i {mlabel}.")
+        st.info(f"No data for {area} in {mlabel}.")
     else:
-        # Plot: egen linje per gruppe
+        # Plot: one line per production group
         fig2 = px.line(
             line_df,
             x="startTime",
@@ -78,15 +95,15 @@ with right:
         fig2.update_layout(xaxis_title="Tid (UTC)", yaxis_title="kWh")
         st.plotly_chart(fig2, use_container_width=True)
 
-# Dokumentasjon under
-with st.expander("Kilde og metode"):
+# Documentation section (translated to English)
+with st.expander("Sources and method"):
     st.markdown(
         """
-- **Kilde:** Elhub API – dataset `PRODUCTION_PER_GROUP_MBA_HOUR` (2021).
-- Rådata hentes, normaliseres og lagres i **Cassandra**.  
-- Deretter ekstraheres med **Spark** til kolonnene: `priceArea`, `productionGroup`, `startTime`, `quantityKwh`.  
-- De samme dataene lastes inn i **MongoDB** (`elhub.production_2021_by_hour`) og vises her.  
-- Pie viser **total** per gruppe for valgt prisområde (hele 2021).  
-- Linjediagram viser **timer** for valgt måned, prisområde og grupper.
+- **Source:** Elhub API – dataset `PRODUCTION_PER_GROUP_MBA_HOUR` (2021).
+- Raw data is fetched, normalized, and stored in **Cassandra**.
+- Then extracted with **Spark** to the columns: `priceArea`, `productionGroup`, `startTime`, `quantityKwh`.
+- The same data is loaded into **MongoDB** (`elhub.production_2021_by_hour`) and displayed here.
+- Pie shows **total** per group for the selected price area (all of 2021).
+- Line diagram shows **hours** for the selected month, price area, and groups.
 """
     )
