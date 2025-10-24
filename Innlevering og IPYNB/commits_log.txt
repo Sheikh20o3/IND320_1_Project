@@ -1,0 +1,35 @@
+* 3f3487d (HEAD -> utvikling_v2, origin/utvikling_v2) Data Table: independent sparkline scaling; cleanup
+* 9cdf880 Fix: 3_Plot.py repo-relativ CSV + fallback
+* 238d061 Streamlit side + MongoDB + utils – v2
+* 76231b8 Oppdatert utils_elhub, sider, Elhub page, Mongo-oppsett, osv.
+| * 998963f (origin/main, origin/HEAD) Added Dev Container Folder
+| | * 743fb98 (utvikling) Ass_2: Elhub 2021 → Spark/Cassandra (DST-safe), plotting, MongoDB export; Java 17 config; VSCode-scripts og struktur
+| | * b866402 (origin/utvikling) Checkpoint: lagrer alt + oppdaterer commits_log.txt
+| |/  
+|/|   
+* | 86da23b MongoDB test (TLS/certifi) OK; Spark⇄Cassandra verifisert; pipeline Cassandra→Mongo lagt til; oppdatert .gitignore for secrets
+* | b0ae33c Spark⇄Cassandra: Java 17, connector på classpath; verifisert read+write; utils lagt til
+* | f6c5e7f Bekrefter Spark⇄Cassandra: la til 01_healthcheck.ipynb, oppdaterte Spark_Cassandra.py og requirements.txt
+* | 765375d Opprettet ny branch 'utvikling_v2' for videre arbeid før peer review
+|/  
+* 9ed89f5 (main) IND320: oppdaterer Streamlit + utils; notebook-eksport
+* 0f8fbc9 Added all plots in notebook, updated explanations, and included Git log export
+* 3451f44 La til requirements.txt for Streamlit Cloud
+* c96c5b5 La til commits_github.txt i Innlevering og IPYNB
+* 8d648f4 Updated notebooks to use %run utils.ipynb instead of Python import
+* 48b3fa0 Fix requirements.txt for Streamlit Cloud
+* e400a3e Fix utils.py to use relative path for CSV
+* 0f65672 Added dataset CSV and restored pages folder for Streamlit Cloud
+* 6df0632 Moved streamlit_app.py and utils.py back to root for Streamlit Cloud
+* 675022a Moved all notebooks and utils.ipynb into same folder, updated imports with %run
+* d8d2450 Restored .py files for Streamlit app (misunderstanding, thought only .ipynb were needed)
+* 73fe7c2 Added Jupytext notebooks (.ipynb) synced with .py files
+* 6b67090 Translate UI to English + clean Plot page (Plotly)
+* f949bc1 Switch plotting to Plotly (teacher feedback)
+* 3a88601 Fix Plot page: clean code, selectbox & select_slider
+* f539117 Slette tester filer
+* 8584a77 Add multi-page Streamlit app (home + pages), utils, requirements, data
+* 2d46512 Update streamlit app
+* ae64149 streamlit_app.py
+* 30be750 Add Funker_Nye.py
+* 8a7ab48 Initial commit
