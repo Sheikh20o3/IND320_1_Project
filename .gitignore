@@ -5,3 +5,6 @@ secrets.toml
 .streamlit/
 .streamlit/secrets.toml
 .streamlit/secrets.toml
+secrets.toml
+.streamlit/secrets.toml
+.DS_Store
