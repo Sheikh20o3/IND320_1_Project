@@ -169,3 +169,20 @@ def fetch_line_df(price_area: str,
     df["startTime"] = pd.to_datetime(df["startTime"], utc=True)
     # We only need these columns downstream for charts
     return df[["startTime", "productionGroup", "quantityKwh"]]
+
+
+def uri_preview() -> str:
+    try:
+        s = getattr(__import__("streamlit"), "secrets", {})
+        if "MONGODB_USER" in s:
+            user = str(s.get("MONGODB_USER","")).strip()
+            host = str(s.get("MONGODB_HOST","ahs786student.qh8rsrb.mongodb.net")).strip()
+            app  = str(s.get("MONGODB_APPNAME","AHS786Student")).strip()
+            return f"user={user}, host={host}, appName={app}, authSource=admin"
+        elif "MONGODB_URI" in s:
+            uri = str(s["MONGODB_URI"]).strip()
+            safe = uri.split("@")[-1]
+            return f"uri=***:***@{safe}"
+    except Exception:
+        pass
+    return "Ingen MongoDB-secrets funnet."

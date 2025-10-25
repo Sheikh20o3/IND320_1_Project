@@ -7,6 +7,14 @@ import plotly.express as px
 
 
 from utils_elhub import get_client
+
+try:
+    from utils_elhub import get_client, uri_preview
+except Exception:
+    from utils_elhub import get_client
+    def uri_preview():
+        return "uri_preview() ikke tilgjengelig i denne builden"
+
 try:
     _ = get_client()
     st.success("MongoDB ping OK")
@@ -29,6 +37,14 @@ st.title("Elhub Production – 2021")  # Page title
 # (Duplicate imports below are kept intentionally; not modifying code structure)
 import streamlit as st
 from utils_elhub import get_client
+
+try:
+    from utils_elhub import get_client, uri_preview
+except Exception:
+    from utils_elhub import get_client
+    def uri_preview():
+        return "uri_preview() ikke tilgjengelig i denne builden"
+
 
 # Test the MongoDB connection and show status in the UI
 with st.status("Testing MongoDB connection", expanded=False):
