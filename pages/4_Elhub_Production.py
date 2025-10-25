@@ -4,6 +4,18 @@ import streamlit as st
 import pandas as pd
 import plotly.express as px
 
+
+
+from utils_elhub import get_client
+try:
+    _ = get_client()
+    st.success("MongoDB ping OK")
+except Exception as e:
+    st.error(f"Mongo-tilkobling feilet: {e}")
+
+
+
+
 from utils_elhub import (
     list_price_areas,
     list_groups,
