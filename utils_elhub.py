@@ -13,17 +13,40 @@ import streamlit as st
 #  Mongo connection 
 def _get_uri() -> str:
     """
-    Fetch the MongoDB URI from Streamlit secrets or from the environment variable.
+    Hent MongoDB URI fra Streamlit secrets eller miljøvariabler.
+    Bygger automatisk URI fra bruker/pass/host hvis full URI mangler.
     """
-    if hasattr(st, "secrets") and "MONGODB_URI" in st.secrets:
-        return st.secrets["MONGODB_URI"]
+    import os
+    import urllib.parse
+    import streamlit as st
+
+    # 1️⃣ Sjekk om full URI finnes
+    if hasattr(st, "secrets"):
+        s = st.secrets
+        if "MONGODB_URI" in s:
+            return s["MONGODB_URI"]
+
+        # 2️⃣ Bygg URI manuelt fra bruker/pass/host
+        user = s.get("MONGODB_USER", "")
+        pw = urllib.parse.quote_plus(s.get("MONGODB_PASSWORD", ""))
+        host = s.get("MONGODB_HOST", "ahs786student.qh8rsrb.mongodb.net")
+        app = s.get("MONGODB_APPNAME", "AHS786Student")
+        if user and pw:
+            return (
+                f"mongodb+srv://{user}:{pw}@{host}/elhub?"
+                f"retryWrites=true&w=majority&tls=true&appName={app}"
+            )
+
+    # 3️⃣ Fallback til miljøvariabel
     uri = os.getenv("MONGODB_URI")
-    if not uri:
-        # Keep message text as-is (Norwegian) to avoid changing runtime-facing strings
-        raise RuntimeError(
-            "MONGODB_URI mangler. Legg den i .streamlit/secrets.toml eller miljøvariabel."
-        )
-    return uri
+    if uri:
+        return uri
+
+    # 4️⃣ Hvis alt feiler
+    raise RuntimeError("Fant ingen MongoDB-kredentialer i secrets eller miljøvariabler.")
+
+
+
 
 
 @st.cache_resource(show_spinner=False)
