@@ -1,5 +1,12 @@
 streamlit
 pandas
+numpy
+matplotlib
+scipy
+statsmodels
+scikit-learn
+requests
 plotly
 pymongo
+dnspython
 certifi

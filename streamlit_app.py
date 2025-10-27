@@ -1,8 +1,16 @@
 import streamlit as st
 from utils import load_data
+from utils import get_selected_price_area
 import pathlib as _pl, streamlit as _st
 
 st.set_page_config(page_title="Streamlit MWE", page_icon="🌤️", layout="wide")
+
+
+# NÅ DET CHAT SA
+area = get_selected_price_area()
+from utils import download_open_meteo
+df_met = download_open_meteo(price_area=area, start_date="2021-01-01", end_date="2021-12-31")
+
 
 st.title("Open-Meteo: Overview")
 st.caption("Explore the `open-meteo-subset.csv` dataset. Use the menu on the left to view the data table with sparklines or an interactive plot.")

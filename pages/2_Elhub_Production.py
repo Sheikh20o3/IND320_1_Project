@@ -3,10 +3,19 @@ import calendar
 import streamlit as st
 import pandas as pd
 import plotly.express as px
-
-
-
 from utils_elhub import get_client
+from utils_elhub import list_price_areas
+
+st.title("Prisområde")
+areas = list_price_areas()
+default = st.session_state.get("price_area", areas[0] if areas else "NO1")
+choice = st.selectbox("Velg prisområde", areas, index=(areas.index(default) if default in areas else 0))
+st.session_state["price_area"] = choice
+
+st.caption(f"Aktivt prisområde: **{st.session_state['price_area']}** (tilgjengelig for andre sider)")
+
+
+
 
 try:
     from utils_elhub import get_client, uri_preview
@@ -68,6 +77,10 @@ left, right = st.columns(2)
 
 with left:
     area = st.radio("Select the price area", areas, index=0, horizontal=True)
+
+# etter at 'area' er valgt:
+    st.session_state["price_area"] = area
+    st.info(f"Valgt prisområde: **{area}** (lagres for bruk på andre sider)")
 
     # Fetch data for the pie chart
     pie_df = fetch_pie_df(area).copy()

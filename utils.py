@@ -1,13 +1,124 @@
+# utils.py
 import os
-import pandas as pd
-import streamlit as st
 from pathlib import Path
+from typing import Dict, Tuple, Optional, Sequence
+
+import pandas as pd
+import requests
+import streamlit as st
 
 
-@st.cache_data(show_spinner=False)  # Cache the function's output; suppress spinner while caching
+# -----------------------------
+# Prisområde -> (by, lat, lon)
+# -----------------------------
+PRICE_AREA_COORDS: Dict[str, Dict[str, float | str]] = {
+    "NO1": {"city": "Oslo",         "latitude": 59.9139,  "longitude": 10.7522},
+    "NO2": {"city": "Kristiansand", "latitude": 58.1467,  "longitude": 7.9956},
+    "NO3": {"city": "Trondheim",    "latitude": 63.4305,  "longitude": 10.3951},
+    "NO4": {"city": "Tromsø",       "latitude": 69.6492,  "longitude": 18.9553},
+    "NO5": {"city": "Bergen",       "latitude": 60.39299, "longitude": 5.32415},
+}
+
+
+def get_area_coords(price_area: str) -> Tuple[float, float, str]:
+    """
+    Returnerer (lat, lon, city) for gitt prisområde (NO1..NO5).
+    Kaster ValueError hvis ukjent område.
+    """
+    pa = price_area.upper().strip()
+    if pa not in PRICE_AREA_COORDS:
+        raise ValueError(f"Ukjent prisområde: {price_area}. Gyldig: {list(PRICE_AREA_COORDS.keys())}")
+    info = PRICE_AREA_COORDS[pa]
+    return float(info["latitude"]), float(info["longitude"]), str(info["city"])
+
+
+# -----------------------------
+# Open-Meteo (ERA5, historisk)
+# -----------------------------
+DEFAULT_HOURLY: Tuple[str, ...] = (
+    "temperature_2m",
+    "precipitation",
+    "wind_speed_10m",
+    "relative_humidity_2m",
+    "surface_pressure",
+    "cloud_cover",
+)
+
 
 @st.cache_data(show_spinner=False)
-def load_data(csv_name: str = "open-meteo-subset.csv") -> pd.DataFrame:
+def download_open_meteo(
+    price_area: Optional[str] = None,
+    *,
+    lat: Optional[float] = None,
+    lon: Optional[float] = None,
+    start_date: str = "2019-01-01",
+    end_date: str = "2019-12-31",
+    hourly: Sequence[str] = DEFAULT_HOURLY,
+    timezone: str = "Europe/Oslo",
+    timeout: int = 60,
+) -> pd.DataFrame:
+    """
+    Henter historiske reanalyse-data (ERA5) fra Open-Meteo Archive API for gitt lokasjon
+    (angitt via prisområde eller lat/lon) og tidsrom [start_date, end_date].
+
+    Parametre
+    ---------
+    price_area : NO1..NO5 (valgfritt). Hvis satt, overstyrer lat/lon.
+    lat, lon   : koordinater (valgfritt hvis price_area settes).
+    start_date : 'YYYY-MM-DD'
+    end_date   : 'YYYY-MM-DD'
+    hourly     : liste over variabler (se DEFAULT_HOURLY).
+    timezone   : f.eks. 'Europe/Oslo' så tid blir lokal norsk tid.
+
+    Returnerer
+    ----------
+    DataFrame med kolonnene ['time', <valgte hourly-variabler>].
+    """
+    if price_area:
+        lat, lon, _ = get_area_coords(price_area)
+    if lat is None or lon is None:
+        raise ValueError("Må angi enten price_area eller (lat, lon).")
+
+    url = "https://archive-api.open-meteo.com/v1/era5"
+    params = {
+        "latitude": lat,
+        "longitude": lon,
+        "start_date": start_date,
+        "end_date": end_date,
+        "hourly": ",".join(hourly),
+        "timezone": timezone,
+    }
+
+    resp = requests.get(url, params=params, timeout=timeout)
+    resp.raise_for_status()
+    payload = resp.json()
+
+    if "hourly" not in payload or "time" not in payload["hourly"]:
+        # Tomt svar / ukjent format -> returnér tom DF med riktige kolonnenavn
+        cols = ["time"] + list(hourly)
+        return pd.DataFrame(columns=cols)
+
+    df = pd.DataFrame(payload["hourly"])
+    # Sørg for at alle ønskede kolonner finnes (kan mangle hvis API ikke hadde data)
+    for col in hourly:
+        if col not in df.columns:
+            df[col] = pd.NA
+
+    # Parse tid
+    df["time"] = pd.to_datetime(df["time"], errors="coerce")
+    df = df.dropna(subset=["time"]).sort_values("time").reset_index(drop=True)
+    return df[["time", *hourly]]
+
+
+# -------------------------------------------------
+# (Eksisterende) CSV-loader – behold som fallback
+# -------------------------------------------------
+@st.cache_data(show_spinner=False)
+def load_data(csv_name: str = "/Users/a.h.sheikh/Desktop/IND320_Git_Job/IND320_1_Project/Innlevering og IPYNB/open-meteo-subset.csv") -> pd.DataFrame:
+    """
+    Laster en CSV hvis den finnes et par kjente steder; hvis ikke
+    genereres trygge demo-data slik at appen fortsatt fungerer.
+    """
     here = Path(__file__).resolve()
     candidates = [
         here.parent / csv_name,                 # prosjektrot
@@ -20,7 +131,7 @@ def load_data(csv_name: str = "open-meteo-subset.csv") -> pd.DataFrame:
         if p.exists():
             df = pd.read_csv(p)
             # Finn og parse en tidskolonne om mulig
-            date_like = [c for c in df.columns if any(k in c.lower() for k in ["date","time","datetime","timestamp"])]
+            date_like = [c for c in df.columns if any(k in c.lower() for k in ["date", "time", "datetime", "timestamp"])]
             if date_like:
                 dcol = date_like[0]
                 df[dcol] = pd.to_datetime(df[dcol], errors="coerce")
@@ -31,8 +142,8 @@ def load_data(csv_name: str = "open-meteo-subset.csv") -> pd.DataFrame:
                 df["month"] = "Unknown"
             return df
 
-    # Fallback: generér trygge demo-data så appen fungerer i skyen
-    idx = pd.date_range("2021-01-01", periods=24*14, freq="H")
+    # Fallback: generér demo-data
+    idx = pd.date_range("2021-01-01", periods=24 * 14, freq="H")
     s = pd.Series(range(len(idx)), dtype="float64")
     df = pd.DataFrame({
         "time": idx,
@@ -42,3 +153,14 @@ def load_data(csv_name: str = "open-meteo-subset.csv") -> pd.DataFrame:
     })
     df["month"] = df["time"].dt.to_period("M").astype(str)
     return df
+
+
+# -------------------------------------------------
+# Små helpers for Streamlit-sider (valg, state)
+# -------------------------------------------------
+def get_selected_price_area(default: str = "NO1") -> str:
+    """
+    Hent prisområde fra session state (satt på side 2), med fallback.
+    """
+    pa = st.session_state.get("price_area", default)
+    return str(pa).upper().strip()
