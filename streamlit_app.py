@@ -19,7 +19,7 @@ st.caption("Explore the `open-meteo-subset.csv` dataset. Use the menu on the lef
 st.sidebar.header("Navigation")
 st.sidebar.page_link("pages/4_Data_Table.py", label="📄 Data table")
 st.sidebar.page_link("pages/5_Plot.py",        label="📈 Plot")
-st.sidebar.page_link("pages/4_Elhub_Production.py", label="⚡ Elhub Production")
+st.sidebar.page_link("pages/2_Elhub_Production.py", label="⚡ Elhub Production")
 st.sidebar.page_link("pages/7_About.py",       label="ℹ️ About")
 
 
