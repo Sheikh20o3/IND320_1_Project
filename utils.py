@@ -164,3 +164,31 @@ def get_selected_price_area(default: str = "NO1") -> str:
     """
     pa = st.session_state.get("price_area", default)
     return str(pa).upper().strip()
+
+# ---- Price area table helper (used by pages/3_Meteorology.py) ----
+def get_price_area_table():
+    import pandas as pd
+    # Prøv å hente fra Mongo via utils_elhub (om tilgjengelig)
+    try:
+        from utils_elhub import list_price_areas
+        areas = list_price_areas()
+        # Normaliser til DataFrame med kolonnenavn 'price_area'
+        if isinstance(areas, (list, tuple, set)):
+            return pd.DataFrame({"price_area": list(areas)})
+        if hasattr(areas, "to_frame"):
+            # f.eks. en Series
+            df = areas.to_frame(name="price_area")
+            if "price_area" not in df.columns:
+                df.columns = ["price_area"]
+            return df
+        if hasattr(areas, "columns"):
+            df = areas
+            if "price_area" not in df.columns:
+                # prøv å gjette første kolonne
+                first = df.columns[0]
+                df = df.rename(columns={first: "price_area"})[["price_area"]]
+            return df
+    except Exception:
+        pass
+    # Fallback: statisk liste
+    return pd.DataFrame({"price_area": ["NO1", "NO2", "NO3", "NO4", "NO5"]})
