@@ -4,18 +4,11 @@ import pandas as pd
 import numpy as np
 from pathlib import Path
 import plotly.express as px
+from utils import load_data  # ← bruk felles loader
 
 st.set_page_config(page_title="Data plot (Plotly)", page_icon="📈", layout="wide")
 st.title("Data plot (Plotly)")
-
-
-# pages/3_Plot.py
-import streamlit as st
-import pandas as pd
-import plotly.express as px
-from pathlib import Path
-
-st.set_page_config(page_title="Data plot (Plotly)", page_icon="📈", layout="wide")  # Note: page config is set twice in this file.
+df = load_data()
 
 def _find_csv(name: str):
     # Search for the CSV in repo root, within the pages/ folder, and in the current working directory
