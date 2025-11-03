@@ -1,51 +1,60 @@
 import streamlit as st
 import pandas as pd
-from utils import load_data
+from utils import download_open_meteo, get_selected_price_area
 
 st.set_page_config(page_title="Data Table", page_icon="📄", layout="wide")
-st.title("Data Table")
+st.title("Data Table (Open-Meteo, 2021)")
 
-df = load_data()
+PA = get_selected_price_area()
+YEAR = 2021
+VARS5 = ["temperature_2m", "precipitation", "wind_speed_10m", "relative_humidity_2m", "surface_pressure"]
 
-st.subheader("Raw data")
-st.dataframe(df, use_container_width=True)
+@st.cache_data(show_spinner=True)
+def _load(pa: str, year: int, vars5: list[str]) -> pd.DataFrame:
+    return download_open_meteo(
+        price_area=pa,
+        start_date=f"{year}-01-01",
+        end_date=f"{year}-12-31",
+        hourly=tuple(vars5),
+        timezone="Europe/Oslo",
+    )
 
-# Find datetime-like and numeric columns by scanning names and dtypes
-date_cols = [c for c in df.columns if any(k in c.lower() for k in ["date", "time", "datetime", "timestamp"])]
-date_col = date_cols[0] if date_cols else None
-num_cols = [c for c in df.columns if pd.api.types.is_numeric_dtype(df[c])]
+df = _load(PA, YEAR, VARS5)
+if df.empty:
+    st.warning("Ingen data fra Open-Meteo.")
+    st.stop()
 
-# Row-wise sparklines
-if "month" in df.columns and date_col and num_cols:
-    months = sorted([m for m in df["month"].dropna().unique()])
-    if months:
-        first_month = months[0]
-        mdf = df[df["month"] == first_month].copy()
+missing = [c for c in VARS5 if c not in df.columns]
+if missing:
+    st.error(f"Mangler kolonner fra API: {missing}. Sjekk kall til Open-Meteo.")
+    st.stop()
 
-        # Prepare the table: one row per numeric column
-        rows = [{"Metric": col, "First month trend": mdf[col].tolist()} for col in num_cols]
-        table = pd.DataFrame(rows)
+df["time"] = pd.to_datetime(df["time"], errors="coerce")
+df = df.dropna(subset=["time"]).copy()
+df["month"] = df["time"].dt.to_period("M").astype(str)
 
-        st.subheader(f"First month — sparklines ({first_month})")
+months = sorted(df["month"].unique())
+if not months:
+    st.warning("Fant ingen måneder i datasettet.")
+    st.stop()
 
-        # IMPORTANT: Do not set y_min/y_max -> Streamlit will scale independently per row for LineChartColumn
-        # This avoids a shared y-axis that can flatten smaller-variance series into near-straight lines.
-        spark_cfg = st.column_config.LineChartColumn(
-            "First month trend",
-            help="Row-wise sparkline for the first month (independent y-scale per row)",
-        )
+month = st.selectbox("Velg måned", months, index=0)
+small = df[df["month"] == month][["time"] + VARS5].copy()
 
-        st.dataframe(
-            table,
-            column_config={
-                "Metric": st.column_config.TextColumn("Metric"),  # Label for the metric/column name
-                "First month trend": spark_cfg,                   # Sparkline showing the month’s sequence
-            },
-            use_container_width=True,
-            hide_index=True,
-        )
-    else:
-        st.info("No month found to display sparklines.")
-else:
-    # Guard clause: we need a detected date/time column, at least one numeric column, and a 'month' column
-    st.info("A date/time column and numeric columns are required to build sparklines.")
+rows = [{"Metric": col, "Trend": small[col].astype(float).tolist()} for col in VARS5]
+table = pd.DataFrame(rows)
+
+spark_cfg = st.column_config.LineChartColumn(
+    label="Trend",
+    help=f"Tidsserie for {month} i {PA}",
+)
+
+st.dataframe(
+    table,
+    column_config={
+        "Metric": st.column_config.TextColumn("Metric"),
+        "Trend": spark_cfg,
+    },
+    hide_index=True,
+    use_container_width=True,
+)
