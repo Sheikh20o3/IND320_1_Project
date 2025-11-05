@@ -3,7 +3,7 @@ import os
 from datetime import datetime
 from pyspark.sql import SparkSession, functions as F
 
-# --- 1) Fetch Mongo URI ---
+# Fetch Mongo URI
 # Try environment variable first, then .streamlit/secrets.toml, and finally “hard fail”.
 MONGO_URI = os.environ.get("MONGODB_URI")
 
@@ -28,7 +28,7 @@ if "tlsDisableOCSPEndpointCheck=" not in MONGO_URI:
     joiner = "&" if "?" in MONGO_URI else "?"
     MONGO_URI = f"{MONGO_URI}{joiner}tlsDisableOCSPEndpointCheck=true"
 
-# 2) Start Spark with the required connectors
+# Start Spark with the required connectors
 spark = (
     SparkSession.builder
     .appName("Elhub Cassandra → Mongo")
@@ -41,14 +41,14 @@ spark = (
     # Cassandra (local instance)
     .config("spark.cassandra.connection.host", "127.0.0.1")
     .config("spark.cassandra.connection.port", "9042")
-    # (optional) slightly larger fetch size
+
     .config("spark.cassandra.input.fetch.size_in_rows", "2000")
     .getOrCreate()
 )
 
 spark.sparkContext.setLogLevel("WARN")
 
-# 3) Read from Cassandra
+# Read from Cassandra
 src_df = (
     spark.read.format("org.apache.spark.sql.cassandra")
     .options(table="production_hourly_by_group", keyspace="elhub_data")
@@ -67,7 +67,6 @@ df = (
     )
 )
 
-# 4) Filter to all of 2021 (inclusive), exclude 2022 ---
 start_utc = datetime(2021, 1, 1, 0, 0, 0)
 end_utc   = datetime(2022, 1, 1, 0, 0, 0)
 df_2021 = df.where((F.col("startTime") >= F.lit(start_utc)) & (F.col("startTime") < F.lit(end_utc)))
@@ -76,7 +75,6 @@ df_2021 = df.where((F.col("startTime") >= F.lit(start_utc)) & (F.col("startTime"
 count_2021 = df_2021.count()
 print(f"Will write {count_2021:,} and document toMongoDB...")
 
-# --- 5) Write to Mongo (DB: elhub, Collection: production_2021_by_hour) ---
 (
     df_2021.write.format("mongodb")
     .mode("overwrite")   # use "append" if you want to add instead of replace
@@ -86,7 +84,6 @@ print(f"Will write {count_2021:,} and document toMongoDB...")
     .save()
 )
 
-# --- 6) Verify by reading back from Mongo with Spark ---
 verify_df = (
     spark.read.format("mongodb")
     .option("spark.mongodb.read.connection.uri", MONGO_URI)
@@ -98,7 +95,6 @@ verify_df = (
 vcount = verify_df.count()
 print(f"Verification: {vcount:,} Documentation in Mongo (elhub.production_2021_by_hour).")
 
-# Show one example
 verify_df.orderBy(F.col("startTime").asc()).show(3, truncate=False)
 
 spark.stop()
