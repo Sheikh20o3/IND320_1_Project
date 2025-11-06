@@ -10,17 +10,17 @@ from scipy.fftpack import dct, idct
 from utils import download_open_meteo, get_selected_price_area
 
 st.set_page_config(layout="wide")
-st.title("Avansert analyse: Outliers & Anomalier (Open-Meteo)")
+st.title("Advanced analysis: Outliers & Anomalies (Open-Meteo)")
 
 # ------------------------------------------------------------
-# Konfigurasjon / valg
+# Configuration / choices
 # ------------------------------------------------------------
 pa = get_selected_price_area()
 years = list(range(2019, 2026))
-year = st.selectbox("År", years, index=years.index(2019))
+year = st.selectbox("Year", years, index=years.index(2019))
 start_date, end_date = f"{year}-01-01", f"{year}-12-31"
 
-# Vi trenger kun temperatur og nedbør til denne siden (new B)
+# We only need temperature and precipitation for this page (new B)
 REQ_VARS = ("temperature_2m", "precipitation")
 
 @st.cache_data(show_spinner=True)
@@ -29,22 +29,22 @@ def _load_met(pa_code: str, sd: str, ed: str, vars_):
 
 df = _load_met(pa, start_date, end_date, REQ_VARS)
 if df.empty:
-    st.warning("Ingen meteorologidata funnet for valget.")
+    st.warning("No meteorological data found for the selection.")
     st.stop()
 
 df["time"] = pd.to_datetime(df["time"])
 
 # ------------------------------------------------------------
-# Hjelpefunksjoner
+# Helper functions
 # ------------------------------------------------------------
 def satv_dct(x: np.ndarray, keep_low_k: int = 48):
     """
-    Høy-pass via DCT: behold lavfrekvent komponent som trend (første keep_low_k koeffisienter),
-    og trekk den fra originalen for å få SATV (sesongjusterte variasjoner).
+    High-pass via DCT: keep the low-frequency component as trend (first keep_low_k coefficients),
+    and subtract it from the original to obtain SATV (seasonally adjusted transient variations).
     """
     x = np.asarray(x, dtype=float)
     C = dct(x, norm="ortho")
-    # rekonstruer trend fra lavfrekvent del
+    # Reconstruct trend from low-frequency part
     C_low = C.copy()
     C_low[keep_low_k:] = 0.0
     trend = idct(C_low, norm="ortho")
@@ -53,7 +53,7 @@ def satv_dct(x: np.ndarray, keep_low_k: int = 48):
 
 def robust_bounds(y: np.ndarray, k_sigma: float = 3.5):
     """
-    SPC-grenser basert på median og MAD (robuste mål).
+    SPC bounds based on median and MAD (robust measures).
     """
     med = np.median(y)
     mad = np.median(np.abs(y - med)) + 1e-12
@@ -61,15 +61,15 @@ def robust_bounds(y: np.ndarray, k_sigma: float = 3.5):
     return med - k_sigma * std, med + k_sigma * std
 
 # ------------------------------------------------------------
-# Tabs: Outlier/SPC (Temperature) og Anomaly/LOF (Precipitation)
+# Tabs: Outlier/SPC (Temperature) and Anomaly/LOF (Precipitation)
 # ------------------------------------------------------------
 tab_outlier, tab_lof = st.tabs(["Outlier / SPC (Temperature)", "Anomaly / LOF (Precipitation)"])
 
 # --------------------- Outlier/SPC TAB ---------------------
 with tab_outlier:
-    st.subheader("Outlier / SPC (robust, basert på SATV) — Temperature")
+    st.subheader("Outlier / SPC (robust, based on SATV) — Temperature")
 
-    # Temperaturserie som timeserie
+    # Temperature series as hourly time series
     ts_temp = (
         pd.Series(df["temperature_2m"].values, index=df["time"])
         .asfreq("H")
@@ -79,32 +79,32 @@ with tab_outlier:
     col1, col2 = st.columns(2)
     with col1:
         keep_low_k = st.slider(
-            "Frekvens-cutoff (antall lavfrekvente DCT-koeff.)",
+            "Frequency cutoff (number of low-frequency DCT coeffs.)",
             min_value=4, max_value=336, value=48, step=4,
-            help="Større tall → mer glatting i trend; outliers blir mer kortsiktige"
+            help="Larger value → more smoothing in the trend; outliers become more short-term"
         )
     with col2:
         k_sigma = st.slider(
-            "Antall 'σ' (robust)",
+            "Number of 'σ' (robust)",
             min_value=2.0, max_value=6.0, value=3.5, step=0.1
         )
 
     satv, trend = satv_dct(ts_temp.values, keep_low_k=keep_low_k)
     low_satv, high_satv = robust_bounds(satv, k_sigma=k_sigma)
 
-    # Prosjekter robuste grenser tilbake på originalskala
+    # Project robust bounds back to the original scale
     lower_curve = trend + low_satv
     upper_curve = trend + high_satv
     outlier_mask = (ts_temp.values < lower_curve) | (ts_temp.values > upper_curve)
 
-    # Plot: originalserie + SPC-grenser + outliers
+    # Plot: original series + SPC bounds + outliers
     fig, ax = plt.subplots(figsize=(12, 5))
     ax.plot(ts_temp.index, ts_temp.values, lw=1.0, label="temperature_2m")
-    ax.plot(ts_temp.index, lower_curve, ls="--", alpha=0.8, label="Nedre grense")
-    ax.plot(ts_temp.index, upper_curve, ls="--", alpha=0.8, label="Øvre grense")
+    ax.plot(ts_temp.index, lower_curve, ls="--", alpha=0.8, label="Lower bound")
+    ax.plot(ts_temp.index, upper_curve, ls="--", alpha=0.8, label="Upper bound")
     ax.scatter(ts_temp.index[outlier_mask], ts_temp.values[outlier_mask], s=15, label="Outliers")
-    ax.set_title(f"Outliers i temperature_2m – {pa} ({year})")
-    ax.set_xlabel("Tid")
+    ax.set_title(f"Outliers in temperature_2m – {pa} ({year})")
+    ax.set_xlabel("Time")
     ax.set_ylabel("temperature_2m [°C]")
     ax.grid(alpha=0.3)
     ax.legend()
@@ -132,9 +132,9 @@ with tab_lof:
     with col1:
         n_neighbors = st.slider("n_neighbors", 5, 100, 35, 1)
     with col2:
-        contamination = st.slider("Forventet andel anomalier", 0.005, 0.10, 0.01, 0.005)  # default 1%
+        contamination = st.slider("Expected anomaly fraction", 0.005, 0.10, 0.01, 0.005)  # default 1%
 
-    # Enkle 2D-features: verdi + rullende gjennomsnitt (gir LOF litt lokal kontekst)
+    # Simple 2D features: value + rolling mean (provides local context to LOF)
     X = pd.DataFrame({
         "val": ts_prec.values,
         "roll": pd.Series(ts_prec.values).rolling(24, min_periods=1).mean().values
@@ -148,8 +148,8 @@ with tab_lof:
     fig2, ax2 = plt.subplots(figsize=(12, 5))
     ax2.plot(ts_prec.index, ts_prec.values, lw=1.0, label="precipitation")
     ax2.scatter(ts_prec.index[is_out], ts_prec.values[is_out], s=15, label="LOF anomalies")
-    ax2.set_title(f"LOF anomalier i precipitation – {pa} ({year})")
-    ax2.set_xlabel("Tid")
+    ax2.set_title(f"LOF anomalies in precipitation – {pa} ({year})")
+    ax2.set_xlabel("Time")
     ax2.set_ylabel("precipitation [mm]")
     ax2.grid(alpha=0.3)
     ax2.legend()
