@@ -1,3 +1,5 @@
+# 7_about.py
+
 import streamlit as st
 import pandas as pd
 import subprocess
@@ -5,63 +7,54 @@ from pathlib import Path
 
 # --- Configuration ---
 st.set_page_config(page_title="About / Project Details", page_icon="ℹ️")
-st.title("About this Project (IND320, Part 3)")
-st.caption("Building on Part 2: Time Series Analysis and Anomaly Detection")
+st.title("About this Project (IND320, Part 2)")
 
 # --- 1. Application and Functionality ---
 st.header("1. Application Scope and Features")
 
 st.markdown(f"""
-This Streamlit application has been significantly expanded to incorporate advanced **Time Series Analysis** and **Anomaly/Outlier Detection** techniques, using both **Elhub electricity production data (2021)** and **meteorological reanalysis data (2021)**.
+This Streamlit application visualizes **hourly electricity production data for Norway for the entire year 2021**, retrieved from the **Elhub API**.
 
-### New Features in the App (Pages 'Time Series' and 'Weather Analysis')
+The main interactive page, **Elhub Production** (`4_Elhub_Production.py`), allows users to:
 
-* **Time Series Analysis (Page 'new A')**:
-    * **Seasonal-Trend decomposition using LOESS (STL)**: Decomposes Elhub production data into seasonal, trend, and residual components.
-    * **Spectrogram**: Visualizes the frequency components of the Elhub production time series.
-* **Weather Analysis (Page 'new B')**:
-    * **Statistical Process Control (SPC)**: Detects outliers in **temperature** data using High-Pass Filtering (DCT) and robust statistical boundaries.
-    * **Local Outlier Factor (LOF)**: Identifies anomalies in **precipitation** data.
-
-The main interactive page, **Elhub Production** (`4_Elhub_Production.py`), still allows users to **Select Price Area** (e.g., NO1, NO2, NO5), which now drives the analysis on the new pages 'new A' and 'new B' for the respective locations.
+* **Select Price Area** (e.g., NO1, NO2, NO5) using radio buttons.
+* View a **Pie Chart** displaying the total annual production broken down by production group for the selected area.
+* Filter on **Production Groups** and **Month** to display a detailed **Time-Series Line Plot** comparing group production over that month.
 """)
 
 # --- 2. Data Flow and Technology Stack ---
 st.header("2. Data Pipeline and Technology")
 
-st.subheader("Data Sources")
+st.subheader("Data Source: Elhub API")
 st.markdown("""
-The project now integrates two primary data sources:
+All data is sourced from the **Elhub API** (`https://api.elhub.no/`), specifically using the endpoint:
+* `PRODUCTION_PER_GROUP_MBA_HOUR`
 
-1.  **Elhub API (Reused from Part 2)**: Hourly electricity production data for all Norwegian price areas for **2021**. Data is stored in **MongoDB Atlas**.
-2.  **Open-Meteo API (New)**: Historical **ERA5 reanalysis data** for key weather properties (e.g., temperature, precipitation) for the year **2021**. Data is downloaded **live** within the Streamlit app based on the selected price area's representative city (Oslo, Bergen, Kristiansand, Trondheim, or Tromsø).
+The API was queried to fetch hourly production for all price areas across the entirety of **2021**.
 """)
 
-st.subheader("Database Integration and Live API Access")
+st.subheader("Database Integration (Cassandra & MongoDB)")
 st.markdown("""
-* **Elhub Data**: The pipeline from Part 2 (Jupyter Notebook -> Spark/Cassandra -> **MongoDB Atlas**) is reused for the production data.
-* **Weather Data**: The Streamlit app now directly calls the **Open-Meteo API** (via a new API wrapper function) to retrieve the meteorological data, replacing the previous local CSV import. This ensures the app uses the latest required methodology.
+The data pipeline involves multiple technologies to fulfill the requirements:
+1.  **Jupyter Notebook** (`elhub_2021_pipeline.ipynb`) retrieves raw data.
+2.  Data is initially loaded into the local **Cassandra** database using **Spark** integration.
+3.  The curated subset (`priceArea`, `productionGroup`, `startTime`, `quantityKwh`) is then read via Spark and loaded into **MongoDB Atlas** (the remote database accessible by the Streamlit app).
+4.  This Streamlit app connects directly to **MongoDB** via `utils_elhub.py` to fetch the necessary data for visualization.
 """)
 
-st.subheader("Code Structure Updates")
+st.subheader("Code Structure")
 st.markdown("""
-Key files and their roles in this part of the project:
-* `project_part_3.ipynb`: The main development and documentation platform, containing functions for all new analyses: API wrapper, SPC/DCT, LOF, STL decomposition, and Spectrogram.
-* `utils_elhub.py`: Continues to hold the MongoDB connection logic and now includes the **Open-Meteo API wrapper function**.
-* **Streamlit Pages**:
-    * The page structure has been reorganized: `1, 4, new A, 2, 3, new B, 5`.
-    * Two new pages contain the core analysis: **'new A' (Time Series)** and **'new B' (Weather Analysis)**, both using `st.tabs()` to present multiple plots and statistics.
-""")
-
-st.subheader("Log and AI Usage")
-st.markdown("""
-A **300-500 word log** detailing the compulsory work (Jupyter Notebook and Streamlit experience) has been included in the `project_part_3.ipynb` file, along with a brief description of **AI usage** during development.
+The project is structured across several key files:
+* `elhub_2021_pipeline.ipynb`: Contains the core logic for data extraction, Spark processing (to Cassandra), plotting, and final loading into MongoDB.
+* `load_to_mongo.py`: A standalone script executed to push the Spark-processed data from Cassandra into MongoDB.
+* `utils_elhub.py`: Contains crucial helper functions, including the **MongoDB connection logic** and data fetching functions (`fetch_pie_df`, `fetch_line_df`) used by the Streamlit pages.
+* `4_Elhub_Production.py`: The main Streamlit page that handles user input and renders the required visualizations using data functions from `utils_elhub.py`.
 """)
 
 # --- 3. Git Log (Repository History) ---
 st.header("3. Git Repository Log")
 
-st.info("The log below shows the last 20 commits, executed on a temporary branch for safety before final merge.")
+st.info("The log below shows the last 20 commits for review, demonstrating version control history.")
 
 try:
     # Attempt to run git log command to display commit history
@@ -86,3 +79,7 @@ except Exception as e:
 st.header("4. Contact Information")
 st.markdown(f"Should you have any questions, comments, or feedback regarding this project, please contact me via email:")
 st.markdown(f"**Email:** [abdul.haadi.sheikh@nmbu.no](mailto:abdul.haadi.sheikh@nmbu.no)")
+
+
+
+Dette er min about page som forklarer hva oppgaven går ut på, endre denne til å passe oppgaven. Engelsk
