@@ -9,7 +9,7 @@ import streamlit as st
 
 
 # -----------------------------
-# Prisområde -> (by, lat, lon)
+# Price area -> (city, lat, lon)
 # -----------------------------
 PRICE_AREA_COORDS: Dict[str, Dict[str, float | str]] = {
     "NO1": {"city": "Oslo",         "latitude": 59.9139,  "longitude": 10.7522},
@@ -22,18 +22,18 @@ PRICE_AREA_COORDS: Dict[str, Dict[str, float | str]] = {
 
 def get_area_coords(price_area: str) -> Tuple[float, float, str]:
     """
-    Returnerer (lat, lon, city) for gitt prisområde (NO1..NO5).
-    Kaster ValueError hvis ukjent område.
+    Returns (lat, lon, city) for the given price area (NO1..NO5).
+    Raises ValueError if the area is unknown.
     """
     pa = price_area.upper().strip()
     if pa not in PRICE_AREA_COORDS:
-        raise ValueError(f"Ukjent prisområde: {price_area}. Gyldig: {list(PRICE_AREA_COORDS.keys())}")
+        raise ValueError(f"Unknown price area: {price_area}. Valid: {list(PRICE_AREA_COORDS.keys())}")
     info = PRICE_AREA_COORDS[pa]
     return float(info["latitude"]), float(info["longitude"]), str(info["city"])
 
 
 # -----------------------------
-# Open-Meteo (ERA5, historisk)
+# Open-Meteo (ERA5, historical)
 # -----------------------------
 DEFAULT_HOURLY: Tuple[str, ...] = (
     "temperature_2m",
@@ -58,26 +58,26 @@ def download_open_meteo(
     timeout: int = 60,
 ) -> pd.DataFrame:
     """
-    Henter historiske reanalyse-data (ERA5) fra Open-Meteo Archive API for gitt lokasjon
-    (angitt via prisområde eller lat/lon) og tidsrom [start_date, end_date].
+    Fetches historical reanalysis data (ERA5) from the Open-Meteo Archive API for a given
+    location (specified via price area or lat/lon) and the time range [start_date, end_date].
 
-    Parametre
-    ---------
-    price_area : NO1..NO5 (valgfritt). Hvis satt, overstyrer lat/lon.
-    lat, lon   : koordinater (valgfritt hvis price_area settes).
+    Parameters
+    ----------
+    price_area : NO1..NO5 (optional). If set, overrides lat/lon.
+    lat, lon   : coordinates (optional if price_area is set).
     start_date : 'YYYY-MM-DD'
     end_date   : 'YYYY-MM-DD'
-    hourly     : liste over variabler (se DEFAULT_HOURLY).
-    timezone   : f.eks. 'Europe/Oslo' så tid blir lokal norsk tid.
+    hourly     : list of variables (see DEFAULT_HOURLY).
+    timezone   : e.g., 'Europe/Oslo' so the time is local Norwegian time.
 
-    Returnerer
-    ----------
-    DataFrame med kolonnene ['time', <valgte hourly-variabler>].
+    Returns
+    -------
+    DataFrame with columns ['time', <selected hourly variables>].
     """
     if price_area:
         lat, lon, _ = get_area_coords(price_area)
     if lat is None or lon is None:
-        raise ValueError("Må angi enten price_area eller (lat, lon).")
+        raise ValueError("Must specify either price_area or (lat, lon).")
 
     url = "https://archive-api.open-meteo.com/v1/era5"
     params = {
@@ -94,43 +94,43 @@ def download_open_meteo(
     payload = resp.json()
 
     if "hourly" not in payload or "time" not in payload["hourly"]:
-        # Tomt svar / ukjent format -> returnér tom DF med riktige kolonnenavn
+        # Empty response / unknown format -> return an empty DF with correct column names
         cols = ["time"] + list(hourly)
         return pd.DataFrame(columns=cols)
 
     df = pd.DataFrame(payload["hourly"])
-    # Sørg for at alle ønskede kolonner finnes (kan mangle hvis API ikke hadde data)
+    # Ensure all requested columns exist (may be missing if the API had no data)
     for col in hourly:
         if col not in df.columns:
             df[col] = pd.NA
 
-    # Parse tid
+    # Parse time
     df["time"] = pd.to_datetime(df["time"], errors="coerce")
     df = df.dropna(subset=["time"]).sort_values("time").reset_index(drop=True)
     return df[["time", *hourly]]
 
 
 # -------------------------------------------------
-# (Eksisterende) CSV-loader – behold som fallback
+# (Existing) CSV loader – keep as fallback
 # -------------------------------------------------
 @st.cache_data(show_spinner=False)
 def load_data(csv_name: str = "/Users/a.h.sheikh/Desktop/IND320_Git_Job/IND320_1_Project/Innlevering og IPYNB/open-meteo-subset.csv") -> pd.DataFrame:
     """
-    Laster en CSV hvis den finnes et par kjente steder; hvis ikke
-    genereres trygge demo-data slik at appen fortsatt fungerer.
+    Loads a CSV if it exists in a few known locations; otherwise,
+    safe demo data is generated so the app still works.
     """
     here = Path(__file__).resolve()
     candidates = [
-        here.parent / csv_name,                 # prosjektrot
+        here.parent / csv_name,                 # project root
         here.parent / "data" / csv_name,       # /data
         here.parent / "pages" / csv_name,      # /pages
-        Path.cwd() / csv_name,                 # arbeidskatalog i skyen
-        Path(csv_name),                        # relativt
+        Path.cwd() / csv_name,                 # working directory in the cloud
+        Path(csv_name),                        # relative
     ]
     for p in candidates:
         if p.exists():
             df = pd.read_csv(p)
-            # Finn og parse en tidskolonne om mulig
+            # Find and parse a time-like column if possible
             date_like = [c for c in df.columns if any(k in c.lower() for k in ["date", "time", "datetime", "timestamp"])]
             if date_like:
                 dcol = date_like[0]
@@ -142,7 +142,7 @@ def load_data(csv_name: str = "/Users/a.h.sheikh/Desktop/IND320_Git_Job/IND320_1
                 df["month"] = "Unknown"
             return df
 
-    # Fallback: generér demo-data
+    # Fallback: generate demo data
     idx = pd.date_range("2021-01-01", periods=24 * 14, freq="H")
     s = pd.Series(range(len(idx)), dtype="float64")
     df = pd.DataFrame({
@@ -156,11 +156,11 @@ def load_data(csv_name: str = "/Users/a.h.sheikh/Desktop/IND320_Git_Job/IND320_1
 
 
 # -------------------------------------------------
-# Små helpers for Streamlit-sider (valg, state)
+# Small helpers for Streamlit pages (selection, state)
 # -------------------------------------------------
 def get_selected_price_area(default: str = "NO1") -> str:
     """
-    Hent prisområde fra session state (satt på side 2), med fallback.
+    Get price area from session state (set on page 2), with fallback.
     """
     pa = st.session_state.get("price_area", default)
     return str(pa).upper().strip()
@@ -168,15 +168,15 @@ def get_selected_price_area(default: str = "NO1") -> str:
 # ---- Price area table helper (used by pages/3_Meteorology.py) ----
 def get_price_area_table():
     import pandas as pd
-    # Prøv å hente fra Mongo via utils_elhub (om tilgjengelig)
+    # Try to fetch from Mongo via utils_elhub (if available)
     try:
         from utils_elhub import list_price_areas
         areas = list_price_areas()
-        # Normaliser til DataFrame med kolonnenavn 'price_area'
+        # Normalize to a DataFrame with column name 'price_area'
         if isinstance(areas, (list, tuple, set)):
             return pd.DataFrame({"price_area": list(areas)})
         if hasattr(areas, "to_frame"):
-            # f.eks. en Series
+            # e.g., a Series
             df = areas.to_frame(name="price_area")
             if "price_area" not in df.columns:
                 df.columns = ["price_area"]
@@ -184,11 +184,11 @@ def get_price_area_table():
         if hasattr(areas, "columns"):
             df = areas
             if "price_area" not in df.columns:
-                # prøv å gjette første kolonne
+                # try to guess the first column
                 first = df.columns[0]
                 df = df.rename(columns={first: "price_area"})[["price_area"]]
             return df
     except Exception:
         pass
-    # Fallback: statisk liste
+    # Fallback: static list
     return pd.DataFrame({"price_area": ["NO1", "NO2", "NO3", "NO4", "NO5"]})
