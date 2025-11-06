@@ -13,20 +13,20 @@ import streamlit as st
 #  Mongo connection 
 def _get_uri() -> str:
     """
-    Hent MongoDB URI fra Streamlit secrets eller miljøvariabler.
-    Bygger automatisk URI fra bruker/pass/host hvis full URI mangler.
+    Retrieve MongoDB URI from Streamlit secrets or environment variables.
+    Automatically builds the URI from user/pass/host if a full URI is missing.
     """
     import os
     import urllib.parse
     import streamlit as st
 
-    # 1️⃣ Sjekk om full URI finnes
+    # 1️⃣ Check if a full URI exists
     if hasattr(st, "secrets"):
         s = st.secrets
         if "MONGODB_URI" in s:
             return s["MONGODB_URI"]
 
-        # 2️⃣ Bygg URI manuelt fra bruker/pass/host
+        # 2️⃣ Build URI manually from user/pass/host
         user = s.get("MONGODB_USER", "")
         pw = urllib.parse.quote_plus(s.get("MONGODB_PASSWORD", ""))
         host = s.get("MONGODB_HOST", "ahs786student.qh8rsrb.mongodb.net")
@@ -37,13 +37,13 @@ def _get_uri() -> str:
                 f"retryWrites=true&w=majority&tls=true&appName={app}"
             )
 
-    # 3️⃣ Fallback til miljøvariabel
+    # 3️⃣ Fallback to environment variable
     uri = os.getenv("MONGODB_URI")
     if uri:
         return uri
 
-    # 4️⃣ Hvis alt feiler
-    raise RuntimeError("Fant ingen MongoDB-kredentialer i secrets eller miljøvariabler.")
+    # 4️⃣ If everything fails
+    raise RuntimeError("No MongoDB credentials found in secrets or environment variables.")
 
 
 
@@ -135,10 +135,10 @@ def fetch_pie_df(price_area: str,
 def _month_bounds(year: int, month: int) -> tuple[datetime, datetime]:
     """
     Build [start, end) UTC bounds for a given month.
-    Note: raises ValueError on invalid month; message kept in Norwegian to avoid changing user-facing text.
+    Note: raises ValueError on invalid month; message is in English.
     """
     if month < 1 or month > 12:
-        raise ValueError("month må være 1..12")
+        raise ValueError("month must be 1..12")
     start = datetime(year, month, 1, 0, 0, 0, tzinfo=timezone.utc)
     if month == 12:
         end = datetime(year + 1, 1, 1, 0, 0, 0, tzinfo=timezone.utc)
@@ -208,4 +208,4 @@ def uri_preview() -> str:
             return f"uri=***:***@{safe}"
     except Exception:
         pass
-    return "Ingen MongoDB-secrets funnet."
+    return "No MongoDB secrets found."
