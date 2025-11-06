@@ -6,13 +6,13 @@ import plotly.express as px
 from utils_elhub import get_client
 from utils_elhub import list_price_areas
 
-st.title("Prisområde")
+st.title("Price area")
 areas = list_price_areas()
 default = st.session_state.get("price_area", areas[0] if areas else "NO1")
-choice = st.selectbox("Velg prisområde", areas, index=(areas.index(default) if default in areas else 0))
+choice = st.selectbox("Choose price area", areas, index=(areas.index(default) if default in areas else 0))
 st.session_state["price_area"] = choice
 
-st.caption(f"Aktivt prisområde: **{st.session_state['price_area']}** (tilgjengelig for andre sider)")
+st.caption(f"Active price area: **{st.session_state['price_area']}** (available to other pages)")
 
 
 
@@ -22,13 +22,13 @@ try:
 except Exception:
     from utils_elhub import get_client
     def uri_preview():
-        return "uri_preview() ikke tilgjengelig i denne builden"
+        return "uri_preview() not available in this build"
 
 try:
     _ = get_client()
     st.success("MongoDB ping OK")
 except Exception as e:
-    st.error(f"Mongo-tilkobling feilet: {e}")
+    st.error(f"Mongo connection failed: {e}")
 
 
 
@@ -52,7 +52,7 @@ try:
 except Exception:
     from utils_elhub import get_client
     def uri_preview():
-        return "uri_preview() ikke tilgjengelig i denne builden"
+        return "uri_preview() not available in this build"
 
 
 # Test the MongoDB connection and show status in the UI
@@ -78,9 +78,9 @@ left, right = st.columns(2)
 with left:
     area = st.radio("Select the price area", areas, index=0, horizontal=True)
 
-# etter at 'area' er valgt:
+    # after 'area' is selected:
     st.session_state["price_area"] = area
-    st.info(f"Valgt prisområde: **{area}** (lagres for bruk på andre sider)")
+    st.info(f"Selected price area: **{area}** (saved for use on other pages)")
 
     # Fetch data for the pie chart
     pie_df = fetch_pie_df(area).copy()
@@ -131,9 +131,9 @@ with right:
             x="startTime",
             y="quantityKwh",
             color="productionGroup",
-            title=f"Timeproduksjon – {area}, {mlabel} 2021",
+            title=f"Hourly production – {area}, {mlabel} 2021",
         )
-        fig2.update_layout(xaxis_title="Tid (UTC)", yaxis_title="kWh")
+        fig2.update_layout(xaxis_title="Time (UTC)", yaxis_title="kWh")
         st.plotly_chart(fig2, use_container_width=True)
 
 # Documentation section (translated to English)
