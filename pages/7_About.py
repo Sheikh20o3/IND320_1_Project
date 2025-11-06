@@ -79,7 +79,3 @@ except Exception as e:
 st.header("4. Contact Information")
 st.markdown(f"Should you have any questions, comments, or feedback regarding this project, please contact me via email:")
 st.markdown(f"**Email:** [abdul.haadi.sheikh@nmbu.no](mailto:abdul.haadi.sheikh@nmbu.no)")
-
-
-
-Dette er min about page som forklarer hva oppgaven går ut på, endre denne til å passe oppgaven. Engelsk
