@@ -1,3 +1,5 @@
+# pages/5_Map_PriceAreas.py
+
 import json
 import datetime as dt
 from pathlib import Path
@@ -7,39 +9,47 @@ import streamlit as st
 import folium
 from streamlit_folium import st_folium
 
-from utils_elhub import (
-    get_client,
-    list_price_areas,
-    list_groups,
-)
+from utils_elhub import get_client, list_price_areas, list_groups
 
+# ------------------------------------------------------------
+# Side-oppsett
+# ------------------------------------------------------------
 st.set_page_config(page_title="Map – Price Areas", page_icon="🗺️", layout="wide")
 st.title("Map and Energy Statistics – Norwegian Price Areas (NO1–NO5)")
 
-# 1. Finn root og last GeoJSON (NVE Elspot / ElSpot_omraade)
-# Root = repo-mappen (en over pages/)
-ROOT_DIR = Path(__file__).resolve().parent.parent
-import os
-import streamlit as st
-
-# GeoJSON ligger i rotmappa
-GEOJSON_PATH = os.path.join(os.path.dirname(__file__), "..", "file.geojson")
-GEOJSON_PATH = os.path.abspath(GEOJSON_PATH)
+# ------------------------------------------------------------
+# 1. Finn og last GeoJSON (NVE Elspot / ElSpot_omraade)
+#    Vi antar at file.geojson ligger i roten av repoet
+#    (samme nivå som streamlit_app.py)
+# ------------------------------------------------------------
+BASE_DIR = Path(__file__).resolve().parent.parent
+GEOJSON_PATH = BASE_DIR / "file.geojson"
 
 if not GEOJSON_PATH.exists():
     st.error(
-        f"GeoJSON-fil ble ikke funnet.\n\n"
+        "GeoJSON-fil ble ikke funnet.\n\n"
         f"Forventet sti: `{GEOJSON_PATH}`\n\n"
-        "Sjekk at `file.geojson` ligger i rotmappen til repoet (samme nivå som `streamlit_app.py`) "
-        "og at den er commit’et og pushet til samme branch som appen kjører på."
+        "Sjekk at `file.geojson` ligger i rotmappen til repoet "
+        "(samme nivå som `streamlit_app.py`) og at den er commit'et og pushet "
+        "til samme branch som appen kjører på."
     )
     st.stop()
 
 with GEOJSON_PATH.open("r", encoding="utf-8") as f:
-    geojson = json.load(f)
+    geojson_data = json.load(f)
 
-# 2. Kontroller: dataset, gruppe, tidsintervall
-areas_from_db = list_price_areas() or ["NO1", "NO2", "NO3", "NO4", "NO5"]
+# ------------------------------------------------------------
+# 2. UI: dataset, gruppe og tidsintervall
+# ------------------------------------------------------------
+# Hent prisområder fra MongoDB, men fall tilbake til NO1–NO5 hvis noe feiler
+try:
+    areas_from_db = list_price_areas()
+except Exception:
+    areas_from_db = []
+
+if not areas_from_db:
+    areas_from_db = ["NO1", "NO2", "NO3", "NO4", "NO5"]
+
 default_area = st.session_state.get("price_area", areas_from_db[0])
 
 col_top1, col_top2, col_top3 = st.columns([1, 1, 1.5])
@@ -74,12 +84,15 @@ st.caption(
     "production/consumption group in each price area."
 )
 
+# ------------------------------------------------------------
 # 3. Hent gjennomsnitt per prisområde fra MongoDB
+# ------------------------------------------------------------
 @st.cache_data(show_spinner=True)
 def fetch_means(mode: str, group: str, start_d: dt.date, end_d: dt.date) -> pd.DataFrame:
     """
     Returns a DataFrame with columns:
         priceArea, meanValue
+
     mode: 'Production' or 'Consumption'
     group: group name from DB or 'All groups'
     """
@@ -95,6 +108,7 @@ def fetch_means(mode: str, group: str, start_d: dt.date, end_d: dt.date) -> pd.D
 
     coll = db[coll_name]
 
+    # [start_d, end_d] inklusivt i dato → [start, end+1) i datetime
     start_dt = dt.datetime.combine(start_d, dt.time.min)
     end_dt_excl = dt.datetime.combine(end_d + dt.timedelta(days=1), dt.time.min)
 
@@ -143,11 +157,13 @@ st.info(
     f"from **{start_date}** to **{end_date}** in each price area."
 )
 
-# 4. Bygg Folium-kart
-
-center = [64.5, 11.0]
+# ------------------------------------------------------------
+# 4. Bygg Folium-kart med GeoJSON-overlay
+# ------------------------------------------------------------
+center = [64.5, 11.0]  # ca. Norge
 m = folium.Map(location=center, zoom_start=4.7, tiles="CartoDB positron")
 
+# Prisområde valgt globalt på andre sider (Elhub Production)
 selected_area = st.session_state.get("price_area", default_area)
 
 
@@ -163,9 +179,11 @@ def normalize_area_code(raw: str) -> str:
 
 def style_function(feature):
     props = feature.get("properties", {})
-    raw_code = props.get("ElSpotOmr", "")
-    area_code = normalize_area_code(raw_code)
+    # Juster dette hvis property-navnet i GeoJSON er annerledes
+    raw_code = props.get("ElSpotOmr", "")  # f.eks. 'NO 1'
+    area_code = normalize_area_code(raw_code)  # → 'NO1'
 
+    # Outline-farge for valgt prisområde
     if area_code == selected_area:
         outline_color = "red"
         weight = 4
@@ -173,6 +191,7 @@ def style_function(feature):
         outline_color = "black"
         weight = 1
 
+    # Fyll basert på gjennomsnittlig value_map
     val = value_map.get(area_code)
     if val is None:
         fill_color = "#cccccc"
@@ -197,7 +216,7 @@ def style_function(feature):
 
 
 folium.GeoJson(
-    geojson,
+    geojson_data,
     name="Elspot Areas",
     style_function=style_function,
     tooltip=folium.GeoJsonTooltip(
@@ -207,6 +226,7 @@ folium.GeoJson(
     ),
 ).add_to(m)
 
+# Marker ev. lagret koordinat fra tidligere
 current_coord = st.session_state.get("map_coord")
 if current_coord is not None:
     folium.Marker(
@@ -215,7 +235,9 @@ if current_coord is not None:
         icon=folium.Icon(color="red", icon="map-marker"),
     ).add_to(m)
 
+# ------------------------------------------------------------
 # 5. Klikk-håndtering og lagring av koordinat
+# ------------------------------------------------------------
 result = st_folium(m, height=600, width="100%", returned_objects=["last_clicked"])
 
 last_clicked = result.get("last_clicked") if result else None
@@ -225,9 +247,14 @@ if last_clicked is not None:
     st.session_state["map_coord"] = (lat, lon)
     st.success(f"Clicked coordinate stored: **({lat:.4f}, {lon:.4f})**")
 else:
-    st.caption("Click anywhere on the map to store a coordinate for use on other pages (e.g. snow drift).")
+    st.caption(
+        "Click anywhere on the map to store a coordinate for use on other pages "
+        "(e.g. snow drift)."
+    )
 
-# 6. Ekstra info
+# ------------------------------------------------------------
+# 6. Ekstra info / debug
+# ------------------------------------------------------------
 with st.expander("Details and debug info"):
     st.markdown(
         """
@@ -237,7 +264,7 @@ with st.expander("Details and debug info"):
         - **Fill color:** Transparent choropleth based on mean `quantityKwh`
           for the selected production/consumption group over the chosen date interval.
         - **Clicked coordinate:** Stored in `st.session_state["map_coord"]`
-          and used by other pages (e.g. snow drift).
+          and can be used by other pages (e.g. snow drift).
         """
     )
     st.write("Raw statistics per price area:")
