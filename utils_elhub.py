@@ -209,3 +209,35 @@ def uri_preview() -> str:
     except Exception:
         pass
     return "No MongoDB secrets found."
+
+
+def fetch_mean_for_period(mode: str, group: str, start, end):
+    """
+    mode: "production" or "consumption"
+    group: productionGroup or consumptionGroup
+    Returns DataFrame: priceArea, meanValue
+    """
+
+    collection = "production_all_years" if mode == "production" else "consumption_all_years"
+    col = client["elhub"][collection]
+
+    start = pd.to_datetime(start)
+    end = pd.to_datetime(end) + pd.Timedelta(days=1)  # include end date fully
+
+    pipeline = [
+        {"$match": {
+            "productionGroup" if mode=="production" else "consumptionGroup": group,
+            "startTime": {"$gte": start, "$lt": end}
+        }},
+        {"$group": {
+            "_id": "$priceArea",
+            "meanValue": {"$avg": "$quantityKwh"}
+        }},
+        {"$project": {
+            "priceArea": "$_id",
+            "meanValue": 1,
+            "_id": 0
+        }}
+    ]
+
+    return pd.DataFrame(list(col.aggregate(pipeline)))
