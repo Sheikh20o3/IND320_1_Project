@@ -1,229 +1,448 @@
 # pages/7_Sliding_Window_Correlation.py
 
-import streamlit as st
-import pandas as pd
-import numpy as np
-import requests
-import plotly.graph_objects as go
-from utils_elhub import get_client
+import datetime as dt
 
+import numpy as np
+import pandas as pd
+import requests
+import streamlit as st
+import plotly.graph_objects as go
+
+from utils_elhub import get_client, list_price_areas
+
+# -------------------------------------------------------------------
+# Page config
+# -------------------------------------------------------------------
 st.set_page_config(
     page_title="Sliding Window Correlation",
     page_icon="📈",
     layout="wide",
 )
 
-st.title("📈 Sliding Window Correlation – Meteorology vs Energy")
+st.title("Sliding Window Correlation – Meteorology vs. Energy")
 
-# -------------------------------------------------------------
-# 1. Meteorology fetcher (Open-Meteo ERA5)
-# -------------------------------------------------------------
+
+# -------------------------------------------------------------------
+# Helpers
+# -------------------------------------------------------------------
+
+# Approximate coordinates per Norwegian price area
+PRICEAREA_COORDS = {
+    "NO1": (59.9139, 10.7522),   # Oslo
+    "NO2": (58.1467, 7.9956),    # Kristiansand-ish
+    "NO3": (63.4305, 10.3951),   # Trondheim
+    "NO4": (69.6492, 18.9553),   # Tromsø
+    "NO5": (60.39299, 5.32415),  # Bergen
+}
+
+
 @st.cache_data(show_spinner=True)
-def fetch_weather(lat, lon, variable, start_date, end_date):
+def fetch_era5_hourly(lat: float, lon: float, year: int) -> pd.DataFrame:
     """
-    Fetches a single meteorological variable from Open-Meteo ERA5.
-    VARIABLE *must* be a single string → we wrap it in a list.
+    Fetch hourly ERA5 reanalysis from Open-Meteo for one full year.
+    We keep a small set of relevant variables.
     """
-    url = "https://archive-api.open-meteo.com/v1/era5"
+    base_url = "https://archive-api.open-meteo.com/v1/era5"
+
+    start_date = dt.date(year, 1, 1)
+    end_date = dt.date(year, 12, 31)
+
+    hourly_vars = [
+        "temperature_2m",
+        "windspeed_10m",
+        "snowfall",
+        "precipitation",
+    ]
 
     params = {
         "latitude": lat,
         "longitude": lon,
-        "start_date": start_date,
-        "end_date": end_date,
-        "hourly": [variable],   # ← FIX: must be list – prevents join error
+        "start_date": start_date.isoformat(),
+        "end_date": end_date.isoformat(),
+        "hourly": ",".join(hourly_vars),
         "timezone": "Europe/Oslo",
     }
 
-    r = requests.get(url, params=params)
-    r.raise_for_status()
+    resp = requests.get(base_url, params=params, timeout=60)
+    resp.raise_for_status()
+    data = resp.json()
 
-    data = r.json()
     if "hourly" not in data:
-        raise RuntimeError(f"No 'hourly' returned from Open-Meteo for '{variable}'.")
+        raise RuntimeError("No 'hourly' field returned from Open-Meteo API.")
 
-    df = pd.DataFrame(data["hourly"])
+    hourly = data["hourly"]
+    df = pd.DataFrame(hourly)
+
+    # Parse time and drop timezone so it matches Elhub (tz-naive)
     df["time"] = pd.to_datetime(df["time"])
-    return df.set_index("time")
+    if df["time"].dt.tz is not None:
+        df["time"] = df["time"].dt.tz_convert("Europe/Oslo").dt.tz_localize(None)
+    else:
+        df["time"] = df["time"].dt.tz_localize(None)
+
+    return df
 
 
-# -------------------------------------------------------------
-# 2. Energy fetcher (MongoDB)
-# -------------------------------------------------------------
 @st.cache_data(show_spinner=True)
-def fetch_energy(area: str, variable: str, start_date: str, end_date: str):
+def fetch_elhub_series(
+    price_area: str,
+    dataset: str,
+    year: int,
+) -> pd.DataFrame:
     """
-    Fetch energy production or consumption from MongoDB.
-    variable = "production_2021_by_hour" or "consumption_2021_by_hour"
+    Fetch hourly energy series from MongoDB for one year and one price area.
+
+    dataset: "Production" or "Consumption"
+    Returns DataFrame with columns: time, energy_kwh
     """
     cli = get_client()
     db = cli["elhub"]
-    coll = db[variable]
 
-    match_stage = {
-        "$match": {
-            "priceArea": area,
-            "startTime": {
-                "$gte": pd.to_datetime(start_date),
-                "$lt": pd.to_datetime(end_date),
-            },
-        }
+    if dataset == "Production":
+        coll_name = "production_2021_by_hour"
+        group_field = "productionGroup"
+    else:
+        coll_name = "consumption_2021_by_hour"
+        group_field = "consumptionGroup"
+
+    coll = db[coll_name]
+
+    start_dt = dt.datetime(year, 1, 1)
+    end_dt = dt.datetime(year + 1, 1, 1)
+
+    match = {
+        "priceArea": price_area,
+        "startTime": {"$gte": start_dt, "$lt": end_dt},
     }
 
-    project_stage = {
-        "$project": {
-            "_id": 0,
-            "time": "$startTime",
-            "quantityKwh": 1,
-        }
-    }
+    pipeline = [
+        {"$match": match},
+        {"$sort": {"startTime": 1}},
+        {
+            "$project": {
+                "_id": 0,
+                "time": "$startTime",
+                "energy_kwh": "$quantityKwh",
+            }
+        },
+    ]
 
-    docs = list(coll.aggregate([match_stage, project_stage]))
-
-    if not docs:
-        return pd.DataFrame(columns=["time", "quantityKwh"]).set_index("time")
-
+    docs = list(coll.aggregate(pipeline))
     df = pd.DataFrame(docs)
+
+    if df.empty:
+        return df
+
     df["time"] = pd.to_datetime(df["time"])
-    return df.set_index("time")
+
+    # Drop timezone if present, so we can intersect with ERA5 timestamps
+    if df["time"].dt.tz is not None:
+        df["time"] = df["time"].dt.tz_convert("Europe/Oslo").dt.tz_localize(None)
+    else:
+        df["time"] = df["time"].dt.tz_localize(None)
+
+    return df
 
 
-# -------------------------------------------------------------
-# 3. Sliding Window Correlation
-# -------------------------------------------------------------
-def sliding_correlation(series_x, series_y, window, lag):
+def compute_sliding_correlation(
+    df: pd.DataFrame,
+    lag_hours: int,
+    window_hours: int,
+    meteo_col: str,
+    energy_col: str,
+) -> pd.DataFrame:
     """
-    Computes correlation(Y vs X shifted) in sliding windows.
+    Given a DataFrame with columns ['time', meteo_col, energy_col],
+    compute rolling correlation between meteo and energy with:
+      - energy shifted by lag_hours
+      - rolling window = window_hours (in hours)
+    Returns DataFrame with columns: ['time', 'corr', meteo_col, energy_col_shifted]
     """
-    # Apply lag: positive = weather leads energy
-    y_shifted = series_y.shift(lag)
+    df = df.sort_values("time").copy()
+    df.set_index("time", inplace=True)
 
-    corr = y_shifted.rolling(window).corr(series_x)
-    return corr
+    x = df[meteo_col].astype(float)
+
+    # Positive lag means energy lags behind meteorology
+    y = df[energy_col].astype(float).shift(lag_hours)
+
+    corr = x.rolling(window=window_hours, min_periods=window_hours // 2).corr(y)
+
+    out = pd.DataFrame(
+        {
+            "time": corr.index,
+            "corr": corr.values,
+            meteo_col: x.values,
+            f"{energy_col}_shifted": y.values,
+        }
+    ).dropna(subset=["corr"])
+
+    return out
 
 
-# -------------------------------------------------------------
-# 4. UI Controls
-# -------------------------------------------------------------
-st.header("Choose Inputs")
+# -------------------------------------------------------------------
+# UI controls
+# -------------------------------------------------------------------
 
-col1, col2, col3 = st.columns(3)
+# Price area selection
+try:
+    areas_from_db = list_price_areas()
+    area_options = areas_from_db or ["NO1", "NO2", "NO3", "NO4", "NO5"]
+except Exception:
+    area_options = ["NO1", "NO2", "NO3", "NO4", "NO5"]
 
-with col1:
-    weather_var = st.selectbox(
-        "Meteorological variable",
-        ["temperature_2m", "windspeed_10m", "snowfall"],
-        index=0,
+default_area = st.session_state.get("price_area", area_options[0])
+
+col_top1, col_top2, col_top3 = st.columns(3)
+
+with col_top1:
+    price_area = st.selectbox(
+        "Price area",
+        options=area_options,
+        index=area_options.index(default_area)
+        if default_area in area_options
+        else 0,
     )
 
-with col2:
-    energy_var = st.selectbox(
+with col_top2:
+    year = st.selectbox("Year", options=[2021, 2022, 2023, 2024], index=0)
+
+with col_top3:
+    dataset = st.radio(
         "Energy dataset",
-        [
-            ("Production (kWh)", "production_2021_by_hour"),
-            ("Consumption (kWh)", "consumption_2021_by_hour"),
-        ],
-        format_func=lambda x: x[0],
+        ["Production", "Consumption"],
+        horizontal=True,
     )
 
-with col3:
-    area = st.selectbox("Price Area", ["NO1", "NO2", "NO3", "NO4", "NO5"])
-
-start_date = "2021-01-01"
-end_date = "2021-12-31"
-
-st.markdown(
-    f"""
-    **Date interval:**  
-    Weather + energy data fetched for: **{start_date} → {end_date}**
-    """
+st.caption(
+    "We correlate an hourly meteorological variable from ERA5 (Open-Meteo) with "
+    "hourly Elhub energy data for the same price area and year."
 )
 
-col_lag, col_win = st.columns(2)
+# Choose meteorological variable
+METEO_LABELS = {
+    "temperature_2m": "Temperature 2m (°C)",
+    "windspeed_10m": "Wind speed 10m (m/s)",
+    "precipitation": "Precipitation (mm)",
+    "snowfall": "Snowfall (cm of snow water equivalent)",
+}
 
-with col_lag:
-    lag = st.slider(
-        "Lag (hours)",
-        min_value=-72,
-        max_value=72,
+meteo_key = st.selectbox(
+    "Meteorological property",
+    options=list(METEO_LABELS.keys()),
+    format_func=lambda k: METEO_LABELS[k],
+    index=0,
+)
+
+# Lag & window length
+col_ctrl1, col_ctrl2 = st.columns(2)
+
+with col_ctrl1:
+    lag_hours = st.slider(
+        "Lag (hours, positive = energy lags behind meteorology)",
+        min_value=-120,
+        max_value=120,
         value=0,
         step=1,
-        help="Positive: weather leads energy. Negative: energy leads weather.",
     )
 
-with col_win:
-    window = st.slider(
-        "Window length (hours)",
-        min_value=24,
-        max_value=500,
-        value=168,
-        step=24,
-        help="Rolling window size in hours.",
+with col_ctrl2:
+    window_days = st.slider(
+        "Window length (days)",
+        min_value=3,
+        max_value=60,
+        value=14,
+        step=1,
     )
 
+window_hours = window_days * 24
 
-# -------------------------------------------------------------
-# 5. Fetch data
-# -------------------------------------------------------------
-with st.spinner("Fetching weather + energy data..."):
-    weather = fetch_weather(
-        lat=59.91,  # Oslo default (NO1)
-        lon=10.75,
-        variable=weather_var,
-        start_date=start_date,
-        end_date=end_date,
-    )
 
-    df_energy = fetch_energy(
-        area=area,
-        variable=energy_var[1],
-        start_date=start_date,
-        end_date=end_date,
-    )
+# -------------------------------------------------------------------
+# Fetch data
+# -------------------------------------------------------------------
 
-# Merge
-df = weather.join(df_energy, how="inner")
-df.rename(columns={"quantityKwh": "energy"}, inplace=True)
-
-if df.empty:
-    st.error("No overlapping timestamps found. Check database or API.")
+if price_area not in PRICEAREA_COORDS:
+    st.error(f"No coordinates defined for price area {price_area}.")
     st.stop()
 
-# -------------------------------------------------------------
-# 6. Compute correlation
-# -------------------------------------------------------------
-corr = sliding_correlation(
-    df[weather_var], df["energy"], window=window, lag=lag
-)
+lat, lon = PRICEAREA_COORDS[price_area]
 
-df_corr = pd.DataFrame({"corr": corr})
+with st.spinner("Downloading ERA5 data and Elhub data..."):
+    try:
+        df_met = fetch_era5_hourly(lat, lon, year)
+    except Exception as e:
+        st.error(f"Failed to fetch weather data for {price_area}: {e}")
+        st.stop()
 
+    df_energy = fetch_elhub_series(price_area, dataset, year)
 
-# -------------------------------------------------------------
-# 7. Plot result
-# -------------------------------------------------------------
-fig = go.Figure()
-fig.add_trace(
-    go.Scatter(
-        x=df_corr.index,
-        y=df_corr["corr"],
-        mode="lines",
-        name="Correlation",
+if df_energy.empty:
+    st.error(
+        f"No {dataset.lower()} data found in MongoDB for {price_area} in {year}. "
+        "Check that the corresponding collection is loaded."
     )
+    st.stop()
+
+if meteo_key not in df_met.columns:
+    st.error(
+        f"Meteorological variable '{meteo_key}' not present in ERA5 data. "
+        "Check the API parameters."
+    )
+    st.stop()
+
+# -------------------------------------------------------------------
+# Align on time & compute correlation
+# -------------------------------------------------------------------
+
+# Keep only required columns and align on hourly timestamps
+df_met_small = df_met[["time", meteo_key]].dropna()
+df_energy_small = df_energy[["time", "energy_kwh"]].dropna()
+
+# Ensure both are tz-naive and sorted
+df_met_small["time"] = pd.to_datetime(df_met_small["time"])
+if df_met_small["time"].dt.tz is not None:
+    df_met_small["time"] = df_met_small["time"].dt.tz_localize(None)
+df_met_small = df_met_small.sort_values("time")
+
+df_energy_small["time"] = pd.to_datetime(df_energy_small["time"])
+if df_energy_small["time"].dt.tz is not None:
+    df_energy_small["time"] = df_energy_small["time"].dt.tz_localize(None)
+df_energy_small = df_energy_small.sort_values("time")
+
+idx_met = df_met_small["time"]
+idx_eng = df_energy_small["time"]
+
+common_idx = idx_met[idx_met.isin(idx_eng)]
+
+if common_idx.empty:
+    st.error(
+        "No overlapping timestamps found between ERA5 data and "
+        f"{dataset.lower()} data.\n\n"
+        "Check that both datasets cover the same year and that timestamps "
+        "are hourly and aligned."
+    )
+
+    with st.expander("Debug info"):
+        st.write("ERA5 time range:", str(idx_met.min()), "→", str(idx_met.max()))
+        st.write("ERA5 rows:", len(idx_met))
+        st.write(f"{dataset} time range:", str(idx_eng.min()), "→", str(idx_eng.max()))
+        st.write(f"{dataset} rows:", len(idx_eng))
+
+    st.stop()
+
+# Restrict both to common timestamps
+df_met_aligned = df_met_small[df_met_small["time"].isin(common_idx)].copy()
+df_energy_aligned = df_energy_small[df_energy_small["time"].isin(common_idx)].copy()
+
+# Merge to one frame
+df_merged = pd.merge(
+    df_met_aligned,
+    df_energy_aligned,
+    on="time",
+    how="inner",
 )
 
-fig.update_layout(
-    title=f"Sliding Window Correlation ({weather_var} vs {area} energy) – Window={window}h, Lag={lag}h",
-    xaxis_title="Time",
-    yaxis_title="Correlation",
-    yaxis=dict(range=[-1, 1]),
-    height=500,
+if df_merged.empty:
+    st.error("Merged DataFrame is empty after alignment – nothing to correlate.")
+    st.stop()
+
+# Compute sliding correlation
+df_corr = compute_sliding_correlation(
+    df=df_merged,
+    lag_hours=lag_hours,
+    window_hours=window_hours,
+    meteo_col=meteo_key,
+    energy_col="energy_kwh",
 )
 
-st.plotly_chart(fig, use_container_width=True)
+if df_corr.empty:
+    st.warning(
+        "Correlation series is empty after rolling calculation. "
+        "Try a shorter window or smaller lag."
+    )
+    st.stop()
 
-st.subheader("Raw merged data")
-st.dataframe(df.head(), use_container_width=True)
 
-st.subheader("Correlation series")
-st.dataframe(df_corr.dropna(), use_container_width=True)
+# -------------------------------------------------------------------
+# Plots
+# -------------------------------------------------------------------
+
+st.subheader("Time series and sliding window correlation")
+
+col_plot1, col_plot2 = st.columns([2, 1])
+
+with col_plot1:
+    st.markdown(
+        f"**Hourly {METEO_LABELS[meteo_key]} and "
+        f"{dataset.lower()} energy (shifted by {lag_hours} h)**"
+    )
+
+    fig_ts = go.Figure()
+
+    fig_ts.add_trace(
+        go.Scatter(
+            x=df_corr["time"],
+            y=df_corr[meteo_key],
+            mode="lines",
+            name=METEO_LABELS[meteo_key],
+        )
+    )
+
+    fig_ts.add_trace(
+        go.Scatter(
+            x=df_corr["time"],
+            y=df_corr["energy_kwh_shifted"],
+            mode="lines",
+            name=f"{dataset} (shifted)",
+            yaxis="y2",
+        )
+    )
+
+    fig_ts.update_layout(
+        xaxis_title="Time",
+        yaxis=dict(
+            title=METEO_LABELS[meteo_key],
+            side="left",
+        ),
+        yaxis2=dict(
+            title=f"{dataset} energy (kWh)",
+            overlaying="y",
+            side="right",
+            showgrid=False,
+        ),
+        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="left", x=0),
+        height=450,
+    )
+
+    st.plotly_chart(fig_ts, use_container_width=True)
+
+with col_plot2:
+    st.markdown(
+        f"**Sliding window correlation** "
+        f"({window_days} d window, lag = {lag_hours} h)"
+    )
+
+    fig_corr = go.Figure()
+    fig_corr.add_trace(
+        go.Scatter(
+            x=df_corr["time"],
+            y=df_corr["corr"],
+            mode="lines",
+            name="Correlation",
+        )
+    )
+    fig_corr.update_layout(
+        xaxis_title="Time",
+        yaxis_title="Correlation coefficient",
+        height=450,
+        yaxis=dict(range=[-1, 1]),
+    )
+
+    st.plotly_chart(fig_corr, use_container_width=True)
+
+with st.expander("Data used for correlation (head)"):
+    st.write("Merged and aligned data:")
+    st.dataframe(df_merged.head(), use_container_width=True)
+    st.write("Correlation series (head):")
+    st.dataframe(df_corr.head(), use_container_width=True)
