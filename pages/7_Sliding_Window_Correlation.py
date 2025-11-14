@@ -6,6 +6,7 @@ import requests
 import streamlit as st
 import plotly.graph_objects as go
 from utils_elhub import get_client, list_price_areas
+import os
 
 # Page config
 st.set_page_config(
@@ -71,6 +72,12 @@ def fetch_era5_hourly(lat: float, lon: float, year: int) -> pd.DataFrame:
         df["time"] = df["time"].dt.tz_localize(None)
 
     return df
+
+
+CSV_FALLBACK_PATHS = {
+    "Production": None,  # kan fylles inn tilsvarende hvis du vil ha prod fra CSV også
+    "Consumption": "Ass4_Rapporter/elhub_consumption_2021_2024_all_areas.csv",
+}
 
 @st.cache_data(show_spinner=True)
 def fetch_elhub_series(
