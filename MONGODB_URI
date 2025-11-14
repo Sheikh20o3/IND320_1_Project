@@ -1,0 +1,1 @@
+MONGODB_URI = "mongodb+srv://AHS_db_user:Pass2025abc@ahs786student.qh8rsrb.mongodb.net/elhub?retryWrites=true&w=majority&appName=AHS786Student&authSource=elhub&authMechanism=SCRAM-SHA-256"
