@@ -1,8 +1,6 @@
 # pages/6_Snow_Drift.py
-
 import datetime as dt
 from math import pi
-
 import numpy as np
 import pandas as pd
 import requests
@@ -17,9 +15,7 @@ st.set_page_config(
 
 st.title("Snow drift calculation and wind rose (ERA5 / Open-Meteo)")
 
-# -------------------------------------------------------------------
 # 1. Get coordinate from map page
-# -------------------------------------------------------------------
 coord = st.session_state.get("map_coord", None)
 
 if coord is None:
@@ -33,9 +29,8 @@ if coord is None:
 lat, lon = coord
 st.info(f"Using coordinate from map page: **lat = {lat:.4f}**, **lon = {lon:.4f}**")
 
-# -------------------------------------------------------------------
 # 2. Helper: fetch ERA5 hourly data from Open-Meteo
-# -------------------------------------------------------------------
+
 @st.cache_data(show_spinner=True)
 def fetch_era5_hourly(lat: float, lon: float, start_date: str, end_date: str) -> pd.DataFrame:
     """
@@ -71,9 +66,8 @@ def fetch_era5_hourly(lat: float, lon: float, start_date: str, end_date: str) ->
     return df
 
 
-# -------------------------------------------------------------------
 # 3. Sector and snow drift helpers (simplified Tabler-style model)
-# -------------------------------------------------------------------
+
 def sector_index(direction_deg: float, n_sectors: int = 16) -> int:
     """
     Map wind direction in degrees [0, 360) to sector index 0..n_sectors-1.
