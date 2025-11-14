@@ -1,18 +1,13 @@
 # pages/7_Sliding_Window_Correlation.py
-
 import datetime as dt
-
 import numpy as np
 import pandas as pd
 import requests
 import streamlit as st
 import plotly.graph_objects as go
-
 from utils_elhub import get_client, list_price_areas
 
-# -------------------------------------------------------------------
 # Page config
-# -------------------------------------------------------------------
 st.set_page_config(
     page_title="Sliding Window Correlation",
     page_icon="📈",
@@ -20,11 +15,6 @@ st.set_page_config(
 )
 
 st.title("Sliding Window Correlation – Meteorology vs. Energy")
-
-
-# -------------------------------------------------------------------
-# Helpers
-# -------------------------------------------------------------------
 
 # Approximate coordinates per Norwegian price area
 PRICEAREA_COORDS = {
@@ -40,7 +30,7 @@ PRICEAREA_COORDS = {
 def fetch_era5_hourly(lat: float, lon: float, year: int) -> pd.DataFrame:
     """
     Fetch hourly ERA5 reanalysis from Open-Meteo for one full year.
-    We keep a small set of relevant variables.
+    Keeps a small set of relevant variables.
     """
     base_url = "https://archive-api.open-meteo.com/v1/era5"
 
@@ -100,10 +90,8 @@ def fetch_elhub_series(
 
     if dataset == "Production":
         coll_name = "production_2021_by_hour"
-        group_field = "productionGroup"
     else:
         coll_name = "consumption_2021_by_hour"
-        group_field = "consumptionGroup"
 
     coll = db[coll_name]
 
@@ -180,11 +168,9 @@ def compute_sliding_correlation(
     return out
 
 
-# -------------------------------------------------------------------
-# UI controls
-# -------------------------------------------------------------------
+# ---------------- UI controls ---------------- #
 
-# Price area selection
+# Price area selection (from DB if possible)
 try:
     areas_from_db = list_price_areas()
     area_options = areas_from_db or ["NO1", "NO2", "NO3", "NO4", "NO5"]
@@ -208,18 +194,19 @@ with col_top2:
     year = st.selectbox("Year", options=[2021, 2022, 2023, 2024], index=0)
 
 with col_top3:
+    # Selector for energy production vs consumption (oppgavetekst)
     dataset = st.radio(
-        "Energy dataset",
+        "Energy series (Production vs Consumption)",
         ["Production", "Consumption"],
         horizontal=True,
     )
 
 st.caption(
     "We correlate an hourly meteorological variable from ERA5 (Open-Meteo) with "
-    "hourly Elhub energy data for the same price area and year."
+    "hourly Elhub energy data (production or consumption) for the same price area and year."
 )
 
-# Choose meteorological variable
+# Selector for meteorological property (oppgavetekst)
 METEO_LABELS = {
     "temperature_2m": "Temperature 2m (°C)",
     "windspeed_10m": "Wind speed 10m (m/s)",
@@ -257,10 +244,7 @@ with col_ctrl2:
 
 window_hours = window_days * 24
 
-
-# -------------------------------------------------------------------
-# Fetch data
-# -------------------------------------------------------------------
+# ---------------- Fetch & align data ---------------- #
 
 if price_area not in PRICEAREA_COORDS:
     st.error(f"No coordinates defined for price area {price_area}.")
@@ -290,10 +274,6 @@ if meteo_key not in df_met.columns:
         "Check the API parameters."
     )
     st.stop()
-
-# -------------------------------------------------------------------
-# Align on time & compute correlation
-# -------------------------------------------------------------------
 
 # Keep only required columns and align on hourly timestamps
 df_met_small = df_met[["time", meteo_key]].dropna()
@@ -363,10 +343,7 @@ if df_corr.empty:
     )
     st.stop()
 
-
-# -------------------------------------------------------------------
-# Plots
-# -------------------------------------------------------------------
+# ---------------- Plots ---------------- #
 
 st.subheader("Time series and sliding window correlation")
 
