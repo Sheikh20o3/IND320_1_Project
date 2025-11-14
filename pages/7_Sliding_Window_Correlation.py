@@ -147,7 +147,6 @@ def _load_energy_from_csv(price_area: str, dataset: str, year: int) -> pd.DataFr
 
     return df[["time", "energy_kwh"]]
 
-
 @st.cache_data(show_spinner=True)
 def fetch_elhub_series(
     price_area: str,
@@ -159,11 +158,13 @@ def fetch_elhub_series(
 
     dataset: "Production" or "Consumption"
     Returns DataFrame with columns: time, energy_kwh
+
+    Hvis MongoDB ikke gir noe, faller vi tilbake til CSV (hvis definert).
     """
     cli = get_client()
 
     # -----------------------------
-    # 1) Finn riktig DB + collection
+    # 1) Finn riktig DB + collection i Mongo
     # -----------------------------
     all_db_names = cli.list_database_names()
 
@@ -187,7 +188,7 @@ def fetch_elhub_series(
     chosen_db = None
     chosen_coll = None
 
-    # Først prøver vi DB "elhub" hvis den finnes, med de navnene vi forventer
+    # Prøv først DB "elhub"
     if "elhub" in all_db_names:
         db = cli["elhub"]
         existing = set(db.list_collection_names())
@@ -197,8 +198,7 @@ def fetch_elhub_series(
                 chosen_coll = db[name]
                 break
 
-    # Hvis vi fortsatt ikke har funnet noe, skann alle databaser etter collections
-    # som inneholder 'prod' eller 'consum' i navnet (avhengig av dataset)
+    # Hvis fortsatt ikke funnet, skann alle DB-er etter collections med keyword
     if chosen_coll is None:
         for db_name in all_db_names:
             db = cli[db_name]
@@ -211,28 +211,27 @@ def fetch_elhub_series(
                 break
 
     if chosen_coll is None:
-        st.error(
-            f"No MongoDB collection with '{keyword}' in the name was found "
-            "in any database. Verify in Atlas what the collection with "
-            f"{dataset.lower()} data is actually called."
+        st.warning(
+            f"Fant ingen MongoDB-collection for {dataset.lower()} med '{keyword}' i navnet. "
+            "Prøver CSV-fallback hvis tilgjengelig."
         )
-        return pd.DataFrame()
+        return _load_energy_from_csv(price_area, dataset, year)
 
     st.info(
-        f"Using MongoDB collection '{chosen_db.name}.{chosen_coll.name}' "
-        f"for {dataset.lower()} data."
+        f"Bruker MongoDB-collection '{chosen_db.name}.{chosen_coll.name}' "
+        f"for {dataset.lower()}."
     )
 
     # -----------------------------
-    # 2) Introspekt ett dokument for å finne riktige feltnavn
+    # 2) Introspekter ett dokument for å finne riktige feltnavn
     # -----------------------------
     sample = chosen_coll.find_one()
     if not sample:
-        st.error(
-            f"Collection '{chosen_db.name}.{chosen_coll.name}' is empty – "
-            f"no {dataset.lower()} data found."
+        st.warning(
+            f"Collection '{chosen_db.name}.{chosen_coll.name}' er tom – "
+            f"ingen {dataset.lower()}-data. Prøver CSV-fallback."
         )
-        return pd.DataFrame()
+        return _load_energy_from_csv(price_area, dataset, year)
 
     keys = {k.lower(): k for k in sample.keys()}
 
@@ -249,14 +248,13 @@ def fetch_elhub_series(
 
     if not (area_field and time_field and qty_field):
         st.error(
-            "Could not automatically detect field names in "
-            f"collection '{chosen_db.name}.{chosen_coll.name}'.\n\n"
-            f"Sample document keys: {list(sample.keys())}"
+            "Klarte ikke å autodetektere feltnavn i MongoDB-dokumentet.\n\n"
+            f"Sample keys: {list(sample.keys())}"
         )
-        return pd.DataFrame()
+        return _load_energy_from_csv(price_area, dataset, year)
 
     # -----------------------------
-    # 3) Hent rader for prisområde (vi filtrerer år i Python)
+    # 3) Hent rader for prisområdet (året filtrerer vi i pandas)
     # -----------------------------
     match = {area_field: price_area}
 
@@ -272,35 +270,52 @@ def fetch_elhub_series(
         },
     ]
 
-    docs = list(chosen_coll.aggregate(pipeline))
-    df = pd.DataFrame(docs)
+    try:
+        docs = list(chosen_coll.aggregate(pipeline))
+    except Exception as e:
+        st.warning(
+            f"MongoDB-agg for {dataset.lower()} feilet: {e}. "
+            "Prøver CSV-fallback hvis tilgjengelig."
+        )
+        return _load_energy_from_csv(price_area, dataset, year)
 
+    df = pd.DataFrame(docs)
     if df.empty:
-        return df
+        st.warning(
+            f"Ingen {dataset.lower()}-data i MongoDB for {price_area} "
+            f"(uansett år). Prøver CSV-fallback."
+        )
+        return _load_energy_from_csv(price_area, dataset, year)
 
     # -----------------------------
-    # 4) Parse tidspunkt og filtrer på år
+    # 4) Tidshåndtering: først til datetime, så gjøre tz-naiv, SÅ filtrere år
     # -----------------------------
     df["time"] = pd.to_datetime(df["time"], errors="coerce")
     df = df.dropna(subset=["time"])
 
-    start_dt = dt.datetime(year, 1, 1)
-    end_dt = dt.datetime(year + 1, 1, 1)
+    # Hvis tz-aware, konverter til Europe/Oslo og dropp tz
+    if getattr(df["time"].dt, "tz", None) is not None:
+        df["time"] = (
+            df["time"].dt.tz_convert("Europe/Oslo").dt.tz_localize(None)
+        )
+
+    start_dt = pd.Timestamp(dt.datetime(year, 1, 1))
+    end_dt = pd.Timestamp(dt.datetime(year + 1, 1, 1))
 
     df = df[(df["time"] >= start_dt) & (df["time"] < end_dt)]
 
     if df.empty:
-        return df
-
-    # Gjør timestempler tz-naive
-    if df["time"].dt.tz is not None:
-        df["time"] = df["time"].dt.tz_convert("Europe/Oslo").dt.tz_localize(None)
-    else:
-        df["time"] = df["time"].dt.tz_localize(None)
+        st.warning(
+            f"Ingen {dataset.lower()}-data i MongoDB for {price_area} i {year}. "
+            "Prøver CSV-fallback hvis tilgjengelig."
+        )
+        return _load_energy_from_csv(price_area, dataset, year)
 
     df = df.sort_values("time")
 
     return df[["time", "energy_kwh"]]
+
+
 
 def compute_sliding_correlation(
     df: pd.DataFrame,
