@@ -1,16 +1,18 @@
+# pages/7_Sliding_Window_Correlation.py
 import datetime as dt
-from pathlib import Path
+import os
 
 import numpy as np
 import pandas as pd
 import requests
 import streamlit as st
 import plotly.graph_objects as go
-from pandas.api.types import is_datetime64tz_dtype
 
 from utils_elhub import get_client, list_price_areas
 
+# -------------------------------------------------------------------
 # Page config
+# -------------------------------------------------------------------
 st.set_page_config(
     page_title="Sliding Window Correlation",
     page_icon="📈",
@@ -18,6 +20,10 @@ st.set_page_config(
 )
 
 st.title("Sliding Window Correlation – Meteorology vs. Energy")
+
+# -------------------------------------------------------------------
+# Constants and helpers
+# -------------------------------------------------------------------
 
 # Approximate coordinates per Norwegian price area
 PRICEAREA_COORDS = {
@@ -28,13 +34,32 @@ PRICEAREA_COORDS = {
     "NO5": (60.39299, 5.32415),  # Bergen
 }
 
-# Project root (IND320_1_Project), works both locally and in /mount/src
-PROJECT_ROOT = Path(__file__).resolve().parents[1]
+# Project root: one level up from pages/
+PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 
-# Exact path to the consumption CSV inside the repo
-CONSUMPTION_CSV_PATH = PROJECT_ROOT / "Ass4_Rapporter" / "elhub_consumption_2021_2024_all_areas.csv"
+# CSV path for consumption (only source for Consumption)
+CONSUMPTION_CSV_PATH = os.path.join(
+    PROJECT_ROOT,
+    "Ass4_Rapporter",
+    "elhub_consumption_2021_2024_all_areas.csv",
+)
+
+def _ensure_naive_oslo(series: pd.Series) -> pd.Series:
+    """
+    Convert a Series to datetime64[ns] and ensure it's tz-naive in Europe/Oslo.
+    Works for strings, tz-aware datetimes and tz-naive datetimes.
+    """
+    series = pd.to_datetime(series, errors="coerce")
+    # If tz-aware, convert to Europe/Oslo and drop tz
+    tz = getattr(series.dt, "tz", None)
+    if tz is not None:
+        series = series.dt.tz_convert("Europe/Oslo").dt.tz_localize(None)
+    return series
 
 
+# -------------------------------------------------------------------
+# ERA5 (Open-Meteo) loader
+# -------------------------------------------------------------------
 @st.cache_data(show_spinner=True)
 def fetch_era5_hourly(lat: float, lon: float, year: int) -> pd.DataFrame:
     """
@@ -72,41 +97,38 @@ def fetch_era5_hourly(lat: float, lon: float, year: int) -> pd.DataFrame:
     hourly = data["hourly"]
     df = pd.DataFrame(hourly)
 
-    # Parse time and drop timezone so it matches Elhub (tz-naive)
-    df["time"] = pd.to_datetime(df["time"], errors="coerce")
+    # Normalise time: tz-naive in Europe/Oslo
+    df["time"] = _ensure_naive_oslo(df["time"])
     df = df.dropna(subset=["time"])
-
-    if is_datetime64tz_dtype(df["time"]):
-        df["time"] = df["time"].dt.tz_convert("Europe/Oslo").dt.tz_localize(None)
 
     return df
 
 
+# -------------------------------------------------------------------
+# Consumption from CSV (ONLY source for Consumption)
+# -------------------------------------------------------------------
 def _load_consumption_from_csv(price_area: str, year: int) -> pd.DataFrame:
     """
-    Load hourly consumption series from the CSV file in Ass4_Rapporter.
-    Used ONLY for Consumption dataset, no MongoDB.
+    Load hourly consumption series from the local CSV file for one price area
+    and one year. This is the ONLY source for Consumption.
+    Returns DataFrame with columns: ['time', 'energy_kwh'].
     """
-    path = CONSUMPTION_CSV_PATH
-
-    if not path.exists():
+    if not os.path.exists(CONSUMPTION_CSV_PATH):
         st.error(
-            "Consumption-CSV-fil ikke funnet.\n\n"
-            f"Forventet sti: '{path}'.\n"
-            "Sjekk at filen er med i repoet og at mappenavnet/filnavnet stemmer "
-            "(Ass4_Rapporter/elhub_consumption_2021_2024_all_areas.csv)."
+            "Consumption CSV file not found.\n\n"
+            f"Expected path: '{CONSUMPTION_CSV_PATH}'.\n"
+            "Check that the file is in the repo under 'Ass4_Rapporter/'."
         )
         return pd.DataFrame()
 
-    df = pd.read_csv(path)
+    df = pd.read_csv(CONSUMPTION_CSV_PATH)
 
-    # Auto-detect column names (case-insensitive)
+    # Map lower-case -> original column names
     cols = {c.lower(): c for c in df.columns}
 
     area_col = cols.get("pricearea") or cols.get("price_area") or cols.get("area")
     time_col = (
         cols.get("starttime")
-        or cols.get("start_time")
         or cols.get("time")
         or cols.get("timestamp")
         or cols.get("datetime")
@@ -121,68 +143,52 @@ def _load_consumption_from_csv(price_area: str, year: int) -> pd.DataFrame:
 
     if not (area_col and time_col and qty_col):
         st.error(
-            "Klarte ikke å autodetektere kolonnenavn i consumption-CSV-filen.\n\n"
-            f"Kolonner: {list(df.columns)}"
+            "Could not auto-detect column names in the consumption CSV file.\n\n"
+            f"Columns: {list(df.columns)}"
         )
         return pd.DataFrame()
 
     # Filter by price area
     df = df[df[area_col] == price_area].copy()
     if df.empty:
-        st.error(
-            f"No consumption data found in CSV for price area {price_area}.\n\n"
-            f"Fil: '{path}'"
+        st.warning(
+            f"No consumption data in CSV for price area {price_area} "
+            f"(any year)."
         )
         return pd.DataFrame()
 
-    # Time column -> datetime
-    df["time"] = pd.to_datetime(df[time_col], errors="coerce")
+    # Normalize time to tz-naive Europe/Oslo and drop rows without valid time
+    df["time"] = _ensure_naive_oslo(df[time_col])
     df = df.dropna(subset=["time"])
 
-    if is_datetime64tz_dtype(df["time"]):
-        df["time"] = df["time"].dt.tz_convert("Europe/Oslo").dt.tz_localize(None)
-
-    # Filter by year
-    start_dt = pd.Timestamp(dt.datetime(year, 1, 1))
-    end_dt = pd.Timestamp(dt.datetime(year + 1, 1, 1))
+    # Filter by year AFTER timezone normalization
+    start_dt = pd.Timestamp(year=year, month=1, day=1)
+    end_dt = pd.Timestamp(year=year + 1, month=1, day=1)
 
     df = df[(df["time"] >= start_dt) & (df["time"] < end_dt)]
     if df.empty:
-        st.error(
-            f"No consumption data found in CSV for {price_area} in {year}.\n\n"
-            f"Fil: '{path}'"
+        st.warning(
+            f"No consumption data found in CSV for {price_area} in {year}."
         )
         return pd.DataFrame()
 
-    # Quantity -> numeric
+    # Ensure numeric kWh
     df["energy_kwh"] = pd.to_numeric(df[qty_col], errors="coerce")
     df = df.dropna(subset=["energy_kwh"])
-
     df = df.sort_values("time")
 
     return df[["time", "energy_kwh"]]
 
 
+# -------------------------------------------------------------------
+# Production from MongoDB (as before, with robust detection)
+# -------------------------------------------------------------------
 @st.cache_data(show_spinner=True)
-def fetch_elhub_series(
-    price_area: str,
-    dataset: str,
-    year: int,
-) -> pd.DataFrame:
+def _load_production_from_mongo(price_area: str, year: int) -> pd.DataFrame:
     """
-    Fetch hourly energy series for one year and one price area.
-
-    dataset: "Production" or "Consumption"
-    Returns DataFrame with columns: time, energy_kwh
-
-    For Consumption: ONLY CSV is used.
-    For Production: MongoDB is used.
+    Load hourly production series from MongoDB for one price area and one year.
+    Returns DataFrame with columns: ['time', 'energy_kwh'].
     """
-    # Consumption: CSV only
-    if dataset == "Consumption":
-        return _load_consumption_from_csv(price_area, year)
-
-    # Production: use MongoDB
     cli = get_client()
     all_db_names = cli.list_database_names()
 
@@ -197,7 +203,7 @@ def fetch_elhub_series(
     chosen_db = None
     chosen_coll = None
 
-    # Try DB "elhub" first
+    # Prefer DB named "elhub"
     if "elhub" in all_db_names:
         db = cli["elhub"]
         existing = set(db.list_collection_names())
@@ -207,7 +213,7 @@ def fetch_elhub_series(
                 chosen_coll = db[name]
                 break
 
-    # If still not found, scan all DBs for collections containing the keyword
+    # If not found, scan all DBs for a collection containing "prod"
     if chosen_coll is None:
         for db_name in all_db_names:
             db = cli[db_name]
@@ -221,22 +227,22 @@ def fetch_elhub_series(
 
     if chosen_coll is None:
         st.error(
-            "Fant ingen MongoDB-collection for produksjon "
-            f"(søkte etter collections med '{keyword}' i navnet)."
+            "No MongoDB collection found for production "
+            f"(searched for keyword '{keyword}')."
         )
         return pd.DataFrame()
 
     st.info(
-        f"Bruker MongoDB-collection '{chosen_db.name}.{chosen_coll.name}' "
-        "for produksjonsdata."
+        f"Using MongoDB collection '{chosen_db.name}.{chosen_coll.name}' "
+        "for production."
     )
 
-    # Introspect one document to detect field names
+    # Introspect one sample document to detect field names
     sample = chosen_coll.find_one()
     if not sample:
         st.error(
-            f"Collection '{chosen_db.name}.{chosen_coll.name}' er tom – "
-            "ingen produksjonsdata funnet."
+            f"Collection '{chosen_db.name}.{chosen_coll.name}' is empty – "
+            "no production data."
         )
         return pd.DataFrame()
 
@@ -255,11 +261,12 @@ def fetch_elhub_series(
 
     if not (area_field and time_field and qty_field):
         st.error(
-            "Klarte ikke å autodetektere feltnavn i MongoDB-dokumentet for produksjon.\n\n"
+            "Could not auto-detect field names in MongoDB production document.\n\n"
             f"Sample keys: {list(sample.keys())}"
         )
         return pd.DataFrame()
 
+    # Match only by price area; filter by year in pandas after normalising time
     match = {area_field: price_area}
 
     pipeline = [
@@ -277,43 +284,67 @@ def fetch_elhub_series(
     try:
         docs = list(chosen_coll.aggregate(pipeline))
     except Exception as e:
-        st.error(f"MongoDB-aggregasjon for produksjon feilet: {e}")
+        st.error(f"MongoDB aggregation for production failed: {e}")
         return pd.DataFrame()
 
     df = pd.DataFrame(docs)
     if df.empty:
-        st.error(
-            f"Ingen produksjonsdata i MongoDB for {price_area} "
-            f"(uansett år) i collection '{chosen_db.name}.{chosen_coll.name}'."
+        st.warning(
+            f"No production data in MongoDB for {price_area} "
+            f"(any year)."
         )
         return pd.DataFrame()
 
-    # Time handling: to datetime, drop tz, then filter year
-    df["time"] = pd.to_datetime(df["time"], errors="coerce")
+    # Normalize time to tz-naive Europe/Oslo
+    df["time"] = _ensure_naive_oslo(df["time"])
     df = df.dropna(subset=["time"])
 
-    if is_datetime64tz_dtype(df["time"]):
-        df["time"] = df["time"].dt.tz_convert("Europe/Oslo").dt.tz_localize(None)
+    # Filter by year
+    start_dt = pd.Timestamp(year=year, month=1, day=1)
+    end_dt = pd.Timestamp(year=year + 1, month=1, day=1)
 
-    start_dt = pd.Timestamp(dt.datetime(year, 1, 1))
-    end_dt = pd.Timestamp(dt.datetime(year + 1, 1, 1))
-
-    df = df[(df["time"] >= start_dt) & (df["time"] < end_dt)]
+    df = df[(df["time"] >= start_dt) & (df["time"] < endDt)]
     if df.empty:
-        st.error(
-            f"Ingen produksjonsdata i MongoDB for {price_area} i {year} "
-            f"i collection '{chosen_db.name}.{chosen_coll.name}'."
+        st.warning(
+            f"No production data found in MongoDB for {price_area} in {year}."
         )
         return pd.DataFrame()
 
     df["energy_kwh"] = pd.to_numeric(df["energy_kwh"], errors="coerce")
     df = df.dropna(subset=["energy_kwh"])
-
     df = df.sort_values("time")
 
     return df[["time", "energy_kwh"]]
 
 
+# -------------------------------------------------------------------
+# Public energy fetcher (used by the app)
+# -------------------------------------------------------------------
+@st.cache_data(show_spinner=True)
+def fetch_elhub_series(
+    price_area: str,
+    dataset: str,
+    year: int,
+) -> pd.DataFrame:
+    """
+    Fetch hourly energy series for one year and one price area.
+
+    dataset: "Production" or "Consumption"
+
+    - Consumption: ONLY from CSV file.
+    - Production: from MongoDB (as before).
+    Returns DataFrame with columns: ['time', 'energy_kwh'].
+    """
+    if dataset == "Consumption":
+        return _load_consumption_from_csv(price_area, year)
+
+    # Production
+    return _load_production_from_mongo(price_area, year)
+
+
+# -------------------------------------------------------------------
+# Sliding correlation
+# -------------------------------------------------------------------
 def compute_sliding_correlation(
     df: pd.DataFrame,
     lag_hours: int,
@@ -350,7 +381,9 @@ def compute_sliding_correlation(
     return out
 
 
-# ---------------- UI controls ---------------- #
+# -------------------------------------------------------------------
+# UI controls
+# -------------------------------------------------------------------
 
 # Price area selection (from DB if possible)
 try:
@@ -376,7 +409,6 @@ with col_top2:
     year = st.selectbox("Year", options=[2021, 2022, 2023, 2024], index=0)
 
 with col_top3:
-    # Selector for energy production vs consumption
     dataset = st.radio(
         "Energy series (Production vs Consumption)",
         ["Production", "Consumption"],
@@ -388,7 +420,7 @@ st.caption(
     "hourly Elhub energy data (production or consumption) for the same price area and year."
 )
 
-# Selector for meteorological property
+# Meteorological property selector
 METEO_LABELS = {
     "temperature_2m": "Temperature 2m (°C)",
     "windspeed_10m": "Wind speed 10m (m/s)",
@@ -426,7 +458,9 @@ with col_ctrl2:
 
 window_hours = window_days * 24
 
-# ---------------- Fetch & align data ---------------- #
+# -------------------------------------------------------------------
+# Fetch & align data
+# -------------------------------------------------------------------
 
 if price_area not in PRICEAREA_COORDS:
     st.error(f"No coordinates defined for price area {price_area}.")
@@ -434,7 +468,7 @@ if price_area not in PRICEAREA_COORDS:
 
 lat, lon = PRICEAREA_COORDS[price_area]
 
-with st.spinner("Downloading ERA5 data and Elhub data..."):
+with st.spinner("Downloading ERA5 data and energy data..."):
     try:
         df_met = fetch_era5_hourly(lat, lon, year)
     except Exception as e:
@@ -443,10 +477,10 @@ with st.spinner("Downloading ERA5 data and Elhub data..."):
 
     df_energy = fetch_elhub_series(price_area, dataset, year)
 
-src_label = "CSV file" if dataset == "Consumption" else "MongoDB"
 if df_energy.empty:
     st.error(
-        f"No {dataset.lower()} data found for {price_area} in {year} from {src_label}."
+        f"No {dataset.lower()} data available for {price_area} in {year}. "
+        "Check that MongoDB/CSV is correctly loaded."
     )
     st.stop()
 
@@ -461,22 +495,12 @@ if meteo_key not in df_met.columns:
 df_met_small = df_met[["time", meteo_key]].dropna()
 df_energy_small = df_energy[["time", "energy_kwh"]].dropna()
 
-# Ensure both are datetime, tz-naive and sorted
+# Make sure times are datetime and naive (they should already be, but be safe)
 df_met_small["time"] = pd.to_datetime(df_met_small["time"], errors="coerce")
-df_met_small = df_met_small.dropna(subset=["time"])
-if is_datetime64tz_dtype(df_met_small["time"]):
-    df_met_small["time"] = (
-        df_met_small["time"].dt.tz_convert("Europe/Oslo").dt.tz_localize(None)
-    )
-df_met_small = df_met_small.sort_values("time")
-
 df_energy_small["time"] = pd.to_datetime(df_energy_small["time"], errors="coerce")
-df_energy_small = df_energy_small.dropna(subset=["time"])
-if is_datetime64tz_dtype(df_energy_small["time"]):
-    df_energy_small["time"] = (
-        df_energy_small["time"].dt.tz_convert("Europe/Oslo").dt.tz_localize(None)
-    )
-df_energy_small = df_energy_small.sort_values("time")
+
+df_met_small = df_met_small.dropna(subset=["time"]).sort_values("time")
+df_energy_small = df_energy_small.dropna(subset=["time"]).sort_values("time")
 
 idx_met = df_met_small["time"]
 idx_eng = df_energy_small["time"]
@@ -531,7 +555,9 @@ if df_corr.empty:
     )
     st.stop()
 
-# ---------------- Plots ---------------- #
+# -------------------------------------------------------------------
+# Plots
+# -------------------------------------------------------------------
 
 st.subheader("Time series and sliding window correlation")
 
