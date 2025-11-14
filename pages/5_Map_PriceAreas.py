@@ -16,12 +16,15 @@ from utils_elhub import (
 st.set_page_config(page_title="Map – Price Areas", page_icon="🗺️", layout="wide")
 st.title("Map and Energy Statistics – Norwegian Price Areas (NO1–NO5)")
 
-# -------------------------------------------------------------
 # 1. Finn root og last GeoJSON (NVE Elspot / ElSpot_omraade)
-# -------------------------------------------------------------
 # Root = repo-mappen (en over pages/)
 ROOT_DIR = Path(__file__).resolve().parent.parent
-GEOJSON_PATH = ROOT_DIR / "/Users/a.h.sheikh/Desktop/IND320_Git_Job/IND320_1_Project/file.geojson"
+import os
+import streamlit as st
+
+# GeoJSON ligger i rotmappa
+GEOJSON_PATH = os.path.join(os.path.dirname(__file__), "..", "file.geojson")
+GEOJSON_PATH = os.path.abspath(GEOJSON_PATH)
 
 if not GEOJSON_PATH.exists():
     st.error(
@@ -35,9 +38,7 @@ if not GEOJSON_PATH.exists():
 with GEOJSON_PATH.open("r", encoding="utf-8") as f:
     geojson = json.load(f)
 
-# -------------------------------------------------------------
 # 2. Kontroller: dataset, gruppe, tidsintervall
-# -------------------------------------------------------------
 areas_from_db = list_price_areas() or ["NO1", "NO2", "NO3", "NO4", "NO5"]
 default_area = st.session_state.get("price_area", areas_from_db[0])
 
@@ -73,9 +74,7 @@ st.caption(
     "production/consumption group in each price area."
 )
 
-# -------------------------------------------------------------
 # 3. Hent gjennomsnitt per prisområde fra MongoDB
-# -------------------------------------------------------------
 @st.cache_data(show_spinner=True)
 def fetch_means(mode: str, group: str, start_d: dt.date, end_d: dt.date) -> pd.DataFrame:
     """
@@ -144,9 +143,8 @@ st.info(
     f"from **{start_date}** to **{end_date}** in each price area."
 )
 
-# -------------------------------------------------------------
 # 4. Bygg Folium-kart
-# -------------------------------------------------------------
+
 center = [64.5, 11.0]
 m = folium.Map(location=center, zoom_start=4.7, tiles="CartoDB positron")
 
@@ -217,9 +215,7 @@ if current_coord is not None:
         icon=folium.Icon(color="red", icon="map-marker"),
     ).add_to(m)
 
-# -------------------------------------------------------------
 # 5. Klikk-håndtering og lagring av koordinat
-# -------------------------------------------------------------
 result = st_folium(m, height=600, width="100%", returned_objects=["last_clicked"])
 
 last_clicked = result.get("last_clicked") if result else None
@@ -231,9 +227,7 @@ if last_clicked is not None:
 else:
     st.caption("Click anywhere on the map to store a coordinate for use on other pages (e.g. snow drift).")
 
-# -------------------------------------------------------------
 # 6. Ekstra info
-# -------------------------------------------------------------
 with st.expander("Details and debug info"):
     st.markdown(
         """
