@@ -72,7 +72,6 @@ def fetch_era5_hourly(lat: float, lon: float, year: int) -> pd.DataFrame:
 
     return df
 
-
 @st.cache_data(show_spinner=True)
 def fetch_elhub_series(
     price_area: str,
@@ -88,56 +87,108 @@ def fetch_elhub_series(
     cli = get_client()
     db = cli["elhub"]
 
-    # Her antar vi at dataene fra del 2 ligger i:
-    #   elhub.production_2021_by_hour
-    #   elhub.consumption_2021_by_hour
-    # med feltnavn: pricearea, starttime, quantitykwh
-    if dataset == "Production":
-        coll_name = "production_2021_by_hour"
-    else:
-        coll_name = "consumption_2021_by_hour"
+    # 1) Finn en fornuftig collection basert på dataset
+    prod_candidates = [
+        "production_2021_by_hour",
+        "production_2021_2024",
+        "production",
+        "elhub_production",
+    ]
+    cons_candidates = [
+        "consumption_2021_by_hour",
+        "consumption_2021_2024",
+        "consumption",
+        "elhub_consumption",
+    ]
 
-    coll = db[coll_name]
+    coll_candidates = prod_candidates if dataset == "Production" else cons_candidates
 
-    start_dt = dt.datetime(year, 1, 1)
-    end_dt = dt.datetime(year + 1, 1, 1)
+    existing = set(db.list_collection_names())
+    chosen_coll = None
+    for name in coll_candidates:
+        if name in existing:
+            chosen_coll = db[name]
+            break
 
-    # OBS: lowercase feltnavn, matcher Mongo
-    match = {
-        "pricearea": price_area,
-        "starttime": {"$gte": start_dt, "$lt": end_dt},
-    }
+    if chosen_coll is None:
+        st.error(
+            f"No MongoDB collection found for {dataset}. "
+            f"Tried: {coll_candidates}"
+        )
+        return pd.DataFrame()
+
+    # 2) Introspekt ett dokument for å finne feltnavn
+    sample = chosen_coll.find_one()
+    if not sample:
+        st.error(
+            f"Collection '{chosen_coll.name}' is empty – no {dataset.lower()} data found."
+        )
+        return pd.DataFrame()
+
+    # Map lowercase -> faktisk navn
+    keys = {k.lower(): k for k in sample.keys()}
+
+    def pick(possible_names):
+        for cand in possible_names:
+            lc = cand.lower()
+            if lc in keys:
+                return keys[lc]
+        return None
+
+    area_field = pick(["pricearea", "price_area", "area"])
+    time_field = pick(["starttime", "start_time", "time", "timestamp", "datetime"])
+    qty_field = pick(["quantitykwh", "quantity_kwh", "kwh", "energy_kwh", "value"])
+
+    if not (area_field and time_field and qty_field):
+        st.error(
+            "Could not automatically detect field names in "
+            f"collection '{chosen_coll.name}'.\n\n"
+            f"Sample document keys: {list(sample.keys())}"
+        )
+        return pd.DataFrame()
+
+    # 3) Hent alle rader for det prisområdet (vi filtrerer på år i Pandas)
+    match = {area_field: price_area}
 
     pipeline = [
         {"$match": match},
-        {"$sort": {"starttime": 1}},
+        {"$sort": {time_field: 1}},
         {
             "$project": {
                 "_id": 0,
-                "time": "$starttime",
-                "energy_kwh": "$quantitykwh",
+                "time": f"${time_field}",
+                "energy_kwh": f"${qty_field}",
             }
         },
     ]
 
-    docs = list(coll.aggregate(pipeline))
+    docs = list(chosen_coll.aggregate(pipeline))
     df = pd.DataFrame(docs)
 
     if df.empty:
         return df
 
-    df["time"] = pd.to_datetime(df["time"])
+    # 4) Parse tid og filtrer på år i Python (robust selv om Mongo lagrer som string)
+    df["time"] = pd.to_datetime(df["time"], errors="coerce")
+    df = df.dropna(subset=["time"])
 
-    # Drop timezone hvis den finnes, så vi matcher ERA5
+    start_dt = dt.datetime(year, 1, 1)
+    end_dt = dt.datetime(year + 1, 1, 1)
+
+    df = df[(df["time"] >= start_dt) & (df["time"] < end_dt)]
+
+    if df.empty:
+        return df
+
+    # 5) Gjør tidsstempel tz-naiv (match med ERA5)
     if df["time"].dt.tz is not None:
         df["time"] = df["time"].dt.tz_convert("Europe/Oslo").dt.tz_localize(None)
     else:
         df["time"] = df["time"].dt.tz_localize(None)
 
-    return df
+    df = df.sort_values("time")
 
-
-
+    return df[["time", "energy_kwh"]]
 
 
 def compute_sliding_correlation(
