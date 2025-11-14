@@ -74,10 +74,79 @@ def fetch_era5_hourly(lat: float, lon: float, year: int) -> pd.DataFrame:
     return df
 
 
+# CSV-fallback for tilfeller der MongoDB ikke har data
 CSV_FALLBACK_PATHS = {
     "Production": None,  # kan fylles inn tilsvarende hvis du vil ha prod fra CSV også
     "Consumption": "Ass4_Rapporter/elhub_consumption_2021_2024_all_areas.csv",
 }
+
+
+def _load_energy_from_csv(price_area: str, dataset: str, year: int) -> pd.DataFrame:
+    """Fallback: les energiserier fra lokal CSV-fil i repoet."""
+    path = CSV_FALLBACK_PATHS.get(dataset)
+
+    if not path:
+        return pd.DataFrame()
+
+    if not os.path.exists(path):
+        st.warning(
+            f"CSV-fallback for {dataset.lower()} er aktivert, men filen finnes ikke: '{path}'."
+        )
+        return pd.DataFrame()
+
+    df = pd.read_csv(path)
+
+    cols = {c.lower(): c for c in df.columns}
+
+    area_col = cols.get("pricearea") or cols.get("price_area") or cols.get("area")
+    time_col = (
+        cols.get("starttime")
+        or cols.get("time")
+        or cols.get("timestamp")
+        or cols.get("datetime")
+    )
+    qty_col = (
+        cols.get("quantitykwh")
+        or cols.get("quantity_kwh")
+        or cols.get("kwh")
+        or cols.get("energy_kwh")
+        or cols.get("value")
+    )
+
+    if not (area_col and time_col and qty_col):
+        st.error(
+            "Klarte ikke å autodetektere kolonnenavn i CSV-filen.\n\n"
+            f"Kolonner: {list(df.columns)}"
+        )
+        return pd.DataFrame()
+
+    # Filtrer på prisområde
+    df = df[df[area_col] == price_area].copy()
+    if df.empty:
+        return pd.DataFrame()
+
+    # Tidskolonne -> datetime
+    df["time"] = pd.to_datetime(df[time_col], errors="coerce")
+    df = df.dropna(subset=["time"])
+
+    # Gjør tidsstempler tz-naive om de er tz-aware
+    if getattr(df["time"].dt, "tz", None) is not None:
+        df["time"] = (
+            df["time"].dt.tz_convert("Europe/Oslo").dt.tz_localize(None)
+        )
+
+    start_dt = pd.Timestamp(dt.datetime(year, 1, 1))
+    end_dt = pd.Timestamp(dt.datetime(year + 1, 1, 1))
+
+    df = df[(df["time"] >= start_dt) & (df["time"] < end_dt)]
+    if df.empty:
+        return pd.DataFrame()
+
+    df = df.sort_values("time")
+    df["energy_kwh"] = df[qty_col].astype(float)
+
+    return df[["time", "energy_kwh"]]
+
 
 @st.cache_data(show_spinner=True)
 def fetch_elhub_series(
