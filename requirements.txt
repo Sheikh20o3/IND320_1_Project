@@ -10,3 +10,5 @@ plotly
 pymongo
 dnspython
 certifi
+folium
+streamlit-folium
