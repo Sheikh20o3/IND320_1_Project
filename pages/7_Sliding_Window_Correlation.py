@@ -88,6 +88,10 @@ def fetch_elhub_series(
     cli = get_client()
     db = cli["elhub"]
 
+    # Her antar vi at dataene fra del 2 ligger i:
+    #   elhub.production_2021_by_hour
+    #   elhub.consumption_2021_by_hour
+    # med feltnavn: pricearea, starttime, quantitykwh
     if dataset == "Production":
         coll_name = "production_2021_by_hour"
     else:
@@ -98,19 +102,20 @@ def fetch_elhub_series(
     start_dt = dt.datetime(year, 1, 1)
     end_dt = dt.datetime(year + 1, 1, 1)
 
+    # OBS: lowercase feltnavn, matcher Mongo
     match = {
-        "priceArea": price_area,
-        "startTime": {"$gte": start_dt, "$lt": end_dt},
+        "pricearea": price_area,
+        "starttime": {"$gte": start_dt, "$lt": end_dt},
     }
 
     pipeline = [
         {"$match": match},
-        {"$sort": {"startTime": 1}},
+        {"$sort": {"starttime": 1}},
         {
             "$project": {
                 "_id": 0,
-                "time": "$startTime",
-                "energy_kwh": "$quantityKwh",
+                "time": "$starttime",
+                "energy_kwh": "$quantitykwh",
             }
         },
     ]
@@ -123,13 +128,16 @@ def fetch_elhub_series(
 
     df["time"] = pd.to_datetime(df["time"])
 
-    # Drop timezone if present, so we can intersect with ERA5 timestamps
+    # Drop timezone hvis den finnes, så vi matcher ERA5
     if df["time"].dt.tz is not None:
         df["time"] = df["time"].dt.tz_convert("Europe/Oslo").dt.tz_localize(None)
     else:
         df["time"] = df["time"].dt.tz_localize(None)
 
     return df
+
+
+
 
 
 def compute_sliding_correlation(
