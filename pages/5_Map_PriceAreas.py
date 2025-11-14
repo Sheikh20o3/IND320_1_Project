@@ -15,7 +15,7 @@ st.set_page_config(page_title="Map – Price Areas", page_icon="🗺️", layout
 st.title("Map of Norwegian Price Areas (NO1–NO5)")
 
 # 1. Load GeoJSON
-GEOJSON_PATH = "data/elspot_areas.geojson"
+GEOJSON_PATH = "/Users/a.h.sheikh/Desktop/IND320_Git_Job/IND320_1_Project/file.geojson"
 
 with open(GEOJSON_PATH, "r", encoding="utf-8") as f:
     geojson = json.load(f)
