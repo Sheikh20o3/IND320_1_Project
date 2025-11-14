@@ -19,15 +19,15 @@ def _load(pa, year, vars_):
 
 df = _load(PA, YEAR, VARS)
 if df.empty:
-    st.warning("Ingen data.")
+    st.warning("No data.")
     st.stop()
 
 df["time"] = pd.to_datetime(df["time"])
 
 num_cols = VARS
 default_sel = num_cols[:2]
-ycols = st.multiselect("Velg måleserier", options=num_cols, default=default_sel)
+ycols = st.multiselect("Choose series", options=num_cols, default=default_sel)
 
 melt = df[["time"] + ycols].melt(id_vars="time", var_name="series", value_name="value")
-fig = px.line(melt, x="time", y="value", color="series", title=f"Tidsserier – {PA}")
+fig = px.line(melt, x="time", y="value", color="series", title=f"Time series – {PA}")
 st.plotly_chart(fig, use_container_width=True)

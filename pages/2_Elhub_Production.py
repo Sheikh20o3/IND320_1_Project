@@ -1,98 +1,81 @@
 # pages/4_Elhub_Production.py
+
 import calendar
 import streamlit as st
-import pandas as pd
 import plotly.express as px
-from utils_elhub import get_client
-from utils_elhub import list_price_areas
-
-st.title("Price area")
-areas = list_price_areas()
-default = st.session_state.get("price_area", areas[0] if areas else "NO1")
-choice = st.selectbox("Choose price area", areas, index=(areas.index(default) if default in areas else 0))
-st.session_state["price_area"] = choice
-
-st.caption(f"Active price area: **{st.session_state['price_area']}** (available to other pages)")
-
-
-
-
-try:
-    from utils_elhub import get_client, uri_preview
-except Exception:
-    from utils_elhub import get_client
-    def uri_preview():
-        return "uri_preview() not available in this build"
-
-try:
-    _ = get_client()
-    st.success("MongoDB ping OK")
-except Exception as e:
-    st.error(f"Mongo connection failed: {e}")
-
-
-
 
 from utils_elhub import (
+    get_client,
     list_price_areas,
     list_groups,
     fetch_pie_df,
     fetch_line_df,
 )
 
-st.title("Elhub Production – 2021")  # Page title
-
-
-# (Duplicate imports below are kept intentionally; not modifying code structure)
-import streamlit as st
-from utils_elhub import get_client
-
+# uri_preview is optional in some builds
 try:
-    from utils_elhub import get_client, uri_preview
+    from utils_elhub import uri_preview
 except Exception:
-    from utils_elhub import get_client
     def uri_preview():
         return "uri_preview() not available in this build"
 
 
-# Test the MongoDB connection and show status in the UI
+# --- Page title ---
+st.title("Elhub Production – 2021")
+
+
+# --- MongoDB connection status ---
 with st.status("Testing MongoDB connection", expanded=False):
     try:
         cli = get_client()
         cnt = cli["elhub"]["production_2021_by_hour"].count_documents({})
-        st.success(f"Connected to MongoDB ✅  Documentation: {cnt:,}")
+        st.success(f"Connected to MongoDB ✅  Documents: {cnt:,}")
     except Exception as e:
-        st.error("Can not se that it is connected to MongoDB.")
+        st.error("Cannot see that it is connected to MongoDB.")
         st.exception(e)
         st.stop()
 
 
-# --- UI: price area selection (radio in left column) ---
+# --- Price area selection (shared via session_state) ---
 areas = list_price_areas()
 if not areas:
-    st.error("Didn't find any priceArea in MongoDB. Check that you have loaded data into elhub.production_2021_by_hour.")
+    st.error(
+        "Didn't find any priceArea in MongoDB. "
+        "Check that you have loaded data into elhub.production_2021_by_hour."
+    )
     st.stop()
 
+default_area = st.session_state.get("price_area", areas[0])
+
+st.subheader("Filter: price area, groups and month")
+area = st.radio(
+    "Select the price area",
+    areas,
+    index=(areas.index(default_area) if default_area in areas else 0),
+    horizontal=True,
+)
+
+st.session_state["price_area"] = area
+st.caption(f"Active price area: **{area}** (available to other pages)")
+
+
+# --- Layout: left = pie (annual total), right = time series (monthly) ---
 left, right = st.columns(2)
 
+# -------------------- LEFT: PIE CHART (TOTAL 2021) --------------------
 with left:
-    area = st.radio("Select the price area", areas, index=0, horizontal=True)
-
-    # after 'area' is selected:
-    st.session_state["price_area"] = area
-    st.info(f"Selected price area: **{area}** (saved for use on other pages)")
+    st.markdown("#### Total production per group (2021)")
 
     # Fetch data for the pie chart
     pie_df = fetch_pie_df(area).copy()
 
-    # Failsafe: some earlier variants may have 'totalKwh' instead of 'quantityKwh'
+    # Failsafe: earlier variants used 'totalKwh' instead of 'quantityKwh'
     if "totalKwh" in pie_df.columns and "quantityKwh" not in pie_df.columns:
         pie_df.rename(columns={"totalKwh": "quantityKwh"}, inplace=True)
 
     if pie_df.empty:
         st.info(f"No data for {area}.")
     else:
-        # Important: 'values' must match an existing column in the DataFrame
         fig = px.pie(
             pie_df,
             values="quantityKwh",
@@ -103,16 +86,25 @@ with left:
         fig.update_traces(textposition="inside", textinfo="percent+label")
         st.plotly_chart(fig, use_container_width=True)
 
+
+# -------------------- RIGHT: LINE PLOT (HOURLY, MONTH) --------------------
 with right:
+    st.markdown("#### Hourly production by group (selected month)")
+
     # Group selection as "pills" (default: all selected)
     all_groups = list_groups(price_area=area)
+
     # st.pills exists in newer Streamlit versions — fall back to multiselect if unavailable
     try:
-        selected_groups = st.pills("Select production groups:", options=all_groups, default=all_groups)
+        selected_groups = st.pills(
+            "Select production groups:", options=all_groups, default=all_groups
+        )
         if selected_groups is None:
             selected_groups = all_groups
     except Exception:
-        selected_groups = st.multiselect("Select production groups:", options=all_groups, default=all_groups)
+        selected_groups = st.multiselect(
+            "Select production groups:", options=all_groups, default=all_groups
+        )
 
     # Select month
     month_names = [calendar.month_name[m] for m in range(1, 13)]
@@ -125,7 +117,6 @@ with right:
     if line_df.empty:
         st.info(f"No data for {area} in {mlabel}.")
     else:
-        # Plot: one line per production group
         fig2 = px.line(
             line_df,
             x="startTime",
@@ -136,7 +127,8 @@ with right:
         fig2.update_layout(xaxis_title="Time (UTC)", yaxis_title="kWh")
         st.plotly_chart(fig2, use_container_width=True)
 
-# Documentation section (translated to English)
+
+# --- Documentation section ---
 with st.expander("Sources and method"):
     st.markdown(
         """
@@ -144,7 +136,7 @@ with st.expander("Sources and method"):
 - Raw data is fetched, normalized, and stored in **Cassandra**.
 - Then extracted with **Spark** to the columns: `priceArea`, `productionGroup`, `startTime`, `quantityKwh`.
 - The same data is loaded into **MongoDB** (`elhub.production_2021_by_hour`) and displayed here.
-- Pie shows **total** per group for the selected price area (all of 2021).
-- Line diagram shows **hours** for the selected month, price area, and groups.
+- The pie chart shows **total** production per group for the selected price area (all of 2021).
+- The line chart shows **hourly** values for the selected month, price area, and production groups.
 """
     )

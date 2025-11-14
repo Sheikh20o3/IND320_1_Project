@@ -2,10 +2,10 @@
 import streamlit as st
 import pandas as pd
 import numpy as np
-import matplotlib.pyplot as plt
 
 from sklearn.neighbors import LocalOutlierFactor
 from scipy.fftpack import dct, idct
+import plotly.graph_objects as go
 
 from utils import download_open_meteo, get_selected_price_area
 
@@ -23,9 +23,16 @@ start_date, end_date = f"{year}-01-01", f"{year}-12-31"
 # We only need temperature and precipitation for this page (new B)
 REQ_VARS = ("temperature_2m", "precipitation")
 
+
 @st.cache_data(show_spinner=True)
 def _load_met(pa_code: str, sd: str, ed: str, vars_):
-    return download_open_meteo(price_area=pa_code, start_date=sd, end_date=ed, hourly=tuple(vars_))
+    return download_open_meteo(
+        price_area=pa_code,
+        start_date=sd,
+        end_date=ed,
+        hourly=tuple(vars_),
+    )
+
 
 df = _load_met(pa, start_date, end_date, REQ_VARS)
 if df.empty:
@@ -51,6 +58,7 @@ def satv_dct(x: np.ndarray, keep_low_k: int = 48):
     satv = x - trend
     return satv, trend
 
+
 def robust_bounds(y: np.ndarray, k_sigma: float = 3.5):
     """
     SPC bounds based on median and MAD (robust measures).
@@ -60,10 +68,13 @@ def robust_bounds(y: np.ndarray, k_sigma: float = 3.5):
     std = 1.4826 * mad  # approx std
     return med - k_sigma * std, med + k_sigma * std
 
+
 # ------------------------------------------------------------
 # Tabs: Outlier/SPC (Temperature) and Anomaly/LOF (Precipitation)
 # ------------------------------------------------------------
-tab_outlier, tab_lof = st.tabs(["Outlier / SPC (Temperature)", "Anomaly / LOF (Precipitation)"])
+tab_outlier, tab_lof = st.tabs(
+    ["Outlier / SPC (Temperature)", "Anomaly / LOF (Precipitation)"]
+)
 
 # --------------------- Outlier/SPC TAB ---------------------
 with tab_outlier:
@@ -80,13 +91,19 @@ with tab_outlier:
     with col1:
         keep_low_k = st.slider(
             "Frequency cutoff (number of low-frequency DCT coeffs.)",
-            min_value=4, max_value=336, value=48, step=4,
-            help="Larger value → more smoothing in the trend; outliers become more short-term"
+            min_value=4,
+            max_value=336,
+            value=48,
+            step=4,
+            help="Larger value → more smoothing in the trend; outliers become more short-term",
         )
     with col2:
         k_sigma = st.slider(
             "Number of 'σ' (robust)",
-            min_value=2.0, max_value=6.0, value=3.5, step=0.1
+            min_value=2.0,
+            max_value=6.0,
+            value=3.5,
+            step=0.1,
         )
 
     satv, trend = satv_dct(ts_temp.values, keep_low_k=keep_low_k)
@@ -97,26 +114,64 @@ with tab_outlier:
     upper_curve = trend + high_satv
     outlier_mask = (ts_temp.values < lower_curve) | (ts_temp.values > upper_curve)
 
-    # Plot: original series + SPC bounds + outliers
-    fig, ax = plt.subplots(figsize=(12, 5))
-    ax.plot(ts_temp.index, ts_temp.values, lw=1.0, label="temperature_2m")
-    ax.plot(ts_temp.index, lower_curve, ls="--", alpha=0.8, label="Lower bound")
-    ax.plot(ts_temp.index, upper_curve, ls="--", alpha=0.8, label="Upper bound")
-    ax.scatter(ts_temp.index[outlier_mask], ts_temp.values[outlier_mask], s=15, label="Outliers")
-    ax.set_title(f"Outliers in temperature_2m – {pa} ({year})")
-    ax.set_xlabel("Time")
-    ax.set_ylabel("temperature_2m [°C]")
-    ax.grid(alpha=0.3)
-    ax.legend()
-    st.pyplot(fig, use_container_width=True)
+    # --- Plot with Plotly: original series + SPC bounds + outliers ---
+    fig_out = go.Figure()
 
-    st.write({
-        "total_points": int(len(ts_temp)),
-        "outliers": int(outlier_mask.sum()),
-        "outlier_fraction": float(outlier_mask.mean()),
-        "lower_bound_SATV": float(low_satv),
-        "upper_bound_SATV": float(high_satv),
-    })
+    fig_out.add_trace(
+        go.Scatter(
+            x=ts_temp.index,
+            y=ts_temp.values,
+            mode="lines",
+            name="temperature_2m",
+        )
+    )
+    fig_out.add_trace(
+        go.Scatter(
+            x=ts_temp.index,
+            y=lower_curve,
+            mode="lines",
+            name="Lower bound",
+            line=dict(dash="dash"),
+        )
+    )
+    fig_out.add_trace(
+        go.Scatter(
+            x=ts_temp.index,
+            y=upper_curve,
+            mode="lines",
+            name="Upper bound",
+            line=dict(dash="dash"),
+        )
+    )
+    fig_out.add_trace(
+        go.Scatter(
+            x=ts_temp.index[outlier_mask],
+            y=ts_temp.values[outlier_mask],
+            mode="markers",
+            name="Outliers",
+            marker=dict(size=6),
+        )
+    )
+
+    fig_out.update_layout(
+        title=f"Outliers in temperature_2m – {pa} ({year})",
+        xaxis_title="Time",
+        yaxis_title="temperature_2m [°C]",
+        hovermode="x unified",
+        margin=dict(l=40, r=20, t=40, b=40),
+    )
+
+    st.plotly_chart(fig_out, use_container_width=True)
+
+    st.write(
+        {
+            "total_points": int(len(ts_temp)),
+            "outliers": int(outlier_mask.sum()),
+            "outlier_fraction": float(outlier_mask.mean()),
+            "lower_bound_SATV": float(low_satv),
+            "upper_bound_SATV": float(high_satv),
+        }
+    )
 
 # ----------------------- LOF TAB -----------------------
 with tab_lof:
@@ -132,33 +187,70 @@ with tab_lof:
     with col1:
         n_neighbors = st.slider("n_neighbors", 5, 100, 35, 1)
     with col2:
-        contamination = st.slider("Expected anomaly fraction", 0.005, 0.10, 0.01, 0.005)  # default 1%
+        contamination = st.slider(
+            "Expected anomaly fraction",
+            0.005,
+            0.10,
+            0.01,
+            0.005,
+        )  # default 1%
 
     # Simple 2D features: value + rolling mean (provides local context to LOF)
-    X = pd.DataFrame({
-        "val": ts_prec.values,
-        "roll": pd.Series(ts_prec.values).rolling(24, min_periods=1).mean().values
-    }).values
+    X = pd.DataFrame(
+        {
+            "val": ts_prec.values,
+            "roll": pd.Series(ts_prec.values)
+            .rolling(24, min_periods=1)
+            .mean()
+            .values,
+        }
+    ).values
 
-    lof = LocalOutlierFactor(n_neighbors=n_neighbors, contamination=contamination)
-    y_pred = lof.fit_predict(X)   # -1 = outlier
+    lof = LocalOutlierFactor(
+        n_neighbors=n_neighbors,
+        contamination=contamination,
+    )
+    y_pred = lof.fit_predict(X)  # -1 = outlier
     scores = -lof.negative_outlier_factor_
-    is_out = (y_pred == -1)
+    is_out = y_pred == -1
 
-    fig2, ax2 = plt.subplots(figsize=(12, 5))
-    ax2.plot(ts_prec.index, ts_prec.values, lw=1.0, label="precipitation")
-    ax2.scatter(ts_prec.index[is_out], ts_prec.values[is_out], s=15, label="LOF anomalies")
-    ax2.set_title(f"LOF anomalies in precipitation – {pa} ({year})")
-    ax2.set_xlabel("Time")
-    ax2.set_ylabel("precipitation [mm]")
-    ax2.grid(alpha=0.3)
-    ax2.legend()
-    st.pyplot(fig2, use_container_width=True)
+    # --- Plot with Plotly: precipitation + LOF anomalies ---
+    fig_lof = go.Figure()
 
-    st.write({
-        "total_points": int(len(ts_prec)),
-        "anomalies": int(is_out.sum()),
-        "anomaly_fraction": float(is_out.mean()),
-        "score_p95": float(np.percentile(scores, 95)),
-        "score_p99": float(np.percentile(scores, 99)),
-    })
+    fig_lof.add_trace(
+        go.Scatter(
+            x=ts_prec.index,
+            y=ts_prec.values,
+            mode="lines",
+            name="precipitation",
+        )
+    )
+    fig_lof.add_trace(
+        go.Scatter(
+            x=ts_prec.index[is_out],
+            y=ts_prec.values[is_out],
+            mode="markers",
+            name="LOF anomalies",
+            marker=dict(size=6),
+        )
+    )
+
+    fig_lof.update_layout(
+        title=f"LOF anomalies in precipitation – {pa} ({year})",
+        xaxis_title="Time",
+        yaxis_title="precipitation [mm]",
+        hovermode="x unified",
+        margin=dict(l=40, r=20, t=40, b=40),
+    )
+
+    st.plotly_chart(fig_lof, use_container_width=True)
+
+    st.write(
+        {
+            "total_points": int(len(ts_prec)),
+            "anomalies": int(is_out.sum()),
+            "anomaly_fraction": float(is_out.mean()),
+            "score_p95": float(np.percentile(scores, 95)),
+            "score_p99": float(np.percentile(scores, 99)),
+        }
+    )
