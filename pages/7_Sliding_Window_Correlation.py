@@ -85,47 +85,79 @@ def fetch_elhub_series(
     Returns DataFrame with columns: time, energy_kwh
     """
     cli = get_client()
-    db = cli["elhub"]
 
-    # 1) Finn en fornuftig collection basert på dataset
-    prod_candidates = [
-        "production_2021_by_hour",
-        "production_2021_2024",
-        "production",
-        "elhub_production",
-    ]
-    cons_candidates = [
-        "consumption_2021_by_hour",
-        "consumption_2021_2024",
-        "consumption",
-        "elhub_consumption",
-    ]
+    # -----------------------------
+    # 1) Finn riktig DB + collection
+    # -----------------------------
+    all_db_names = cli.list_database_names()
 
-    coll_candidates = prod_candidates if dataset == "Production" else cons_candidates
+    if dataset == "Production":
+        keyword = "prod"
+        preferred_collections = [
+            "production_2021_by_hour",
+            "production_2021_2024",
+            "production",
+            "elhub_production",
+        ]
+    else:
+        keyword = "consum"  # matcher 'consumption', 'consum_...' osv
+        preferred_collections = [
+            "consumption_2021_by_hour",
+            "consumption_2021_2024",
+            "consumption",
+            "elhub_consumption",
+        ]
 
-    existing = set(db.list_collection_names())
+    chosen_db = None
     chosen_coll = None
-    for name in coll_candidates:
-        if name in existing:
-            chosen_coll = db[name]
-            break
+
+    # Først prøver vi DB "elhub" hvis den finnes, med de navnene vi forventer
+    if "elhub" in all_db_names:
+        db = cli["elhub"]
+        existing = set(db.list_collection_names())
+        for name in preferred_collections:
+            if name in existing:
+                chosen_db = db
+                chosen_coll = db[name]
+                break
+
+    # Hvis vi fortsatt ikke har funnet noe, skann alle databaser etter collections
+    # som inneholder 'prod' eller 'consum' i navnet (avhengig av dataset)
+    if chosen_coll is None:
+        for db_name in all_db_names:
+            db = cli[db_name]
+            for coll_name in db.list_collection_names():
+                if keyword in coll_name.lower():
+                    chosen_db = db
+                    chosen_coll = db[coll_name]
+                    break
+            if chosen_coll is not None:
+                break
 
     if chosen_coll is None:
         st.error(
-            f"No MongoDB collection found for {dataset}. "
-            f"Tried: {coll_candidates}"
+            f"No MongoDB collection with '{keyword}' in the name was found "
+            "in any database. Verify in Atlas what the collection with "
+            f"{dataset.lower()} data is actually called."
         )
         return pd.DataFrame()
 
-    # 2) Introspekt ett dokument for å finne feltnavn
+    st.info(
+        f"Using MongoDB collection '{chosen_db.name}.{chosen_coll.name}' "
+        f"for {dataset.lower()} data."
+    )
+
+    # -----------------------------
+    # 2) Introspekt ett dokument for å finne riktige feltnavn
+    # -----------------------------
     sample = chosen_coll.find_one()
     if not sample:
         st.error(
-            f"Collection '{chosen_coll.name}' is empty – no {dataset.lower()} data found."
+            f"Collection '{chosen_db.name}.{chosen_coll.name}' is empty – "
+            f"no {dataset.lower()} data found."
         )
         return pd.DataFrame()
 
-    # Map lowercase -> faktisk navn
     keys = {k.lower(): k for k in sample.keys()}
 
     def pick(possible_names):
@@ -142,12 +174,14 @@ def fetch_elhub_series(
     if not (area_field and time_field and qty_field):
         st.error(
             "Could not automatically detect field names in "
-            f"collection '{chosen_coll.name}'.\n\n"
+            f"collection '{chosen_db.name}.{chosen_coll.name}'.\n\n"
             f"Sample document keys: {list(sample.keys())}"
         )
         return pd.DataFrame()
 
-    # 3) Hent alle rader for det prisområdet (vi filtrerer på år i Pandas)
+    # -----------------------------
+    # 3) Hent rader for prisområde (vi filtrerer år i Python)
+    # -----------------------------
     match = {area_field: price_area}
 
     pipeline = [
@@ -168,7 +202,9 @@ def fetch_elhub_series(
     if df.empty:
         return df
 
-    # 4) Parse tid og filtrer på år i Python (robust selv om Mongo lagrer som string)
+    # -----------------------------
+    # 4) Parse tidspunkt og filtrer på år
+    # -----------------------------
     df["time"] = pd.to_datetime(df["time"], errors="coerce")
     df = df.dropna(subset=["time"])
 
@@ -180,7 +216,7 @@ def fetch_elhub_series(
     if df.empty:
         return df
 
-    # 5) Gjør tidsstempel tz-naiv (match med ERA5)
+    # Gjør timestempler tz-naive
     if df["time"].dt.tz is not None:
         df["time"] = df["time"].dt.tz_convert("Europe/Oslo").dt.tz_localize(None)
     else:
@@ -189,7 +225,6 @@ def fetch_elhub_series(
     df = df.sort_values("time")
 
     return df[["time", "energy_kwh"]]
-
 
 def compute_sliding_correlation(
     df: pd.DataFrame,
