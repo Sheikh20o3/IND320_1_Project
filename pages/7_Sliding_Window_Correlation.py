@@ -83,7 +83,7 @@ def fetch_era5_hourly(lat: float, lon: float, year: int) -> pd.DataFrame:
 # ---------------------------------------------------------
 # CSV-fallback for CONSUMPTION – ONLY CSV (ingen MongoDB)
 # ---------------------------------------------------------
-CONSUMPTION_CSV_PATH = "Ass4_Rapporter/elhub_consumption_2021_2024_all_areas.csv"
+CONSUMPTION_CSV_PATH = "/Users/a.h.sheikh/Desktop/IND320_Git_Job/IND320_1_Project/Ass4_Rapporter/elhub_consumption_2021_2024_all_areas.csv"
 
 
 def _load_consumption_from_csv(price_area: str, year: int) -> pd.DataFrame:
