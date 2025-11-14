@@ -1,6 +1,8 @@
 # pages/6_Snow_Drift.py
 import datetime as dt
 from math import pi
+import calendar
+
 import numpy as np
 import pandas as pd
 import requests
@@ -15,7 +17,9 @@ st.set_page_config(
 
 st.title("Snow drift calculation and wind rose (ERA5 / Open-Meteo)")
 
+# ------------------------------------------------------------
 # 1. Get coordinate from map page
+# ------------------------------------------------------------
 coord = st.session_state.get("map_coord", None)
 
 if coord is None:
@@ -29,8 +33,9 @@ if coord is None:
 lat, lon = coord
 st.info(f"Using coordinate from map page: **lat = {lat:.4f}**, **lon = {lon:.4f}**")
 
+# ------------------------------------------------------------
 # 2. Helper: fetch ERA5 hourly data from Open-Meteo
-
+# ------------------------------------------------------------
 @st.cache_data(show_spinner=True)
 def fetch_era5_hourly(lat: float, lon: float, start_date: str, end_date: str) -> pd.DataFrame:
     """
@@ -66,15 +71,15 @@ def fetch_era5_hourly(lat: float, lon: float, start_date: str, end_date: str) ->
     return df
 
 
+# ------------------------------------------------------------
 # 3. Sector and snow drift helpers (simplified Tabler-style model)
-
+# ------------------------------------------------------------
 def sector_index(direction_deg: float, n_sectors: int = 16) -> int:
     """
     Map wind direction in degrees [0, 360) to sector index 0..n_sectors-1.
     Sectors are 360/n_sectors degrees wide, centered on N, NNE, ...
     """
     width = 360.0 / n_sectors
-    # Shift by half a sector so sector 0 is centered on North
     idx = int(((direction_deg + width / 2.0) % 360.0) // width)
     return idx
 
@@ -107,7 +112,6 @@ def compute_snow_drift_for_season(
         return 0.0, np.zeros(n_sectors), 0.0, 0
 
     v = active["windspeed_10m"].to_numpy()
-    # Cubic relationship above threshold (arbitrary scaling factor 1.0)
     q_hourly = (v - v_threshold) ** 3
 
     drift_index = float(q_hourly.sum())
@@ -129,18 +133,15 @@ def plot_wind_rose(avg_sector_values: np.ndarray, title: str = "Snow drift wind 
     Plot a polar wind rose using average sector drift values.
     """
     n_sectors = len(avg_sector_values)
-    # Angles at sector centers
     theta = np.linspace(0, 2 * np.pi, n_sectors, endpoint=False)
     width = 2 * np.pi / n_sectors
 
     fig, ax = plt.subplots(subplot_kw={"projection": "polar"})
-    bars = ax.bar(theta, avg_sector_values, width=width, bottom=0.0, alpha=0.8)
+    ax.bar(theta, avg_sector_values, width=width, bottom=0.0, alpha=0.8)
 
-    # Align 0° with North and rotate clockwise
     ax.set_theta_zero_location("N")
     ax.set_theta_direction(-1)
 
-    # Cardinal labels every 45° (N, NE, E, SE, S, SW, W, NW)
     ax.set_xticks(np.deg2rad(np.arange(0, 360, 45)))
     ax.set_xticklabels(["N", "NE", "E", "SE", "S", "SW", "W", "NW"])
 
@@ -148,9 +149,9 @@ def plot_wind_rose(avg_sector_values: np.ndarray, title: str = "Snow drift wind 
     return fig
 
 
-# -------------------------------------------------------------------
-# 4. UI: year range and parameters
-# -------------------------------------------------------------------
+# ------------------------------------------------------------
+# 4. UI: snow year range and parameters
+# ------------------------------------------------------------
 st.subheader("Snow year definition and settings")
 
 col_years, col_thresh = st.columns([2, 1])
@@ -187,9 +188,9 @@ if start_year > end_year:
 
 years_range = list(range(start_year, end_year + 1))
 
-# -------------------------------------------------------------------
+# ------------------------------------------------------------
 # 5. Compute snow drift per year
-# -------------------------------------------------------------------
+# ------------------------------------------------------------
 results = []
 sector_sums = None
 n_sectors = 16
@@ -235,15 +236,14 @@ if not results:
 
 df_results = pd.DataFrame(results)
 
-# Avoid division by zero
 if sector_sums is None or np.allclose(sector_sums, 0):
     avg_sector_values = np.zeros(n_sectors)
 else:
     avg_sector_values = sector_sums / len(years_range)
 
-# -------------------------------------------------------------------
+# ------------------------------------------------------------
 # 6. Plots: snow drift per year + wind rose
-# -------------------------------------------------------------------
+# ------------------------------------------------------------
 st.subheader("Results")
 
 col_left, col_right = st.columns(2)
@@ -271,3 +271,105 @@ st.caption(
     "If your `Snow_drift.py` implements the full Tabler method, you can reuse those "
     "functions here and replace the simplified computation."
 )
+
+# ------------------------------------------------------------
+# 7. BONUS: Monthly snow drift calculation + plot
+# ------------------------------------------------------------
+st.header("📅 Monthly Snow Drift (Bonus)")
+
+MONTH_LABELS = ["Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
+                "Jan", "Feb", "Mar", "Apr", "May", "Jun"]
+
+
+def compute_monthly_snowdrift_for_year(
+    snow_year_start: int,
+    lat: float,
+    lon: float,
+    v_threshold: float,
+) -> pd.DataFrame:
+    """
+    Compute monthly snow drift for a snow year:
+    1 July snow_year_start  – 30 June snow_year_start+1.
+
+    Returns DataFrame with columns:
+        snow_year, month_index (0..11), month_label, drift_index
+    """
+    records = []
+
+    # (month_index, year, month)
+    month_years = list(enumerate(
+        [(snow_year_start, m) for m in range(7, 13)] +
+        [(snow_year_start + 1, m) for m in range(1, 7)]
+    ))
+
+    for idx, (y, m) in month_years:
+        # Calendar month boundaries
+        last_day = calendar.monthrange(y, m)[1]
+        start_date = dt.date(y, m, 1)
+        end_date = dt.date(y, m, last_day)
+
+        df_m = fetch_era5_hourly(
+            lat=lat,
+            lon=lon,
+            start_date=start_date.isoformat(),
+            end_date=end_date.isoformat(),
+        )
+
+        drift_index, _, _, _ = compute_snow_drift_for_season(
+            df_m,
+            v_threshold=v_threshold,
+            temp_threshold=0.0,
+            snow_threshold=0.0,
+            n_sectors=n_sectors,
+        )
+
+        records.append(
+            {
+                "snow_year": f"{snow_year_start}/{snow_year_start+1}",
+                "month_index": idx,           # 0..11
+                "month_label": MONTH_LABELS[idx],
+                "drift_index": drift_index,
+            }
+        )
+
+    return pd.DataFrame(records)
+
+
+# Compute monthly drift for all selected snow years
+monthly_frames = []
+with st.spinner("Computing monthly snow drift (bonus)..."):
+    for y in years_range:
+        df_m = compute_monthly_snowdrift_for_year(
+            snow_year_start=y,
+            lat=lat,
+            lon=lon,
+            v_threshold=v_threshold,
+        )
+        monthly_frames.append(df_m)
+
+df_monthly = pd.concat(monthly_frames, ignore_index=True)
+
+st.subheader("Yearly vs monthly snow drift")
+
+fig3, ax3 = plt.subplots(figsize=(9, 4))
+
+# Plot monthly curves per snow year
+for snow_year in df_monthly["snow_year"].unique():
+    sub = df_monthly[df_monthly["snow_year"] == snow_year]
+    ax3.plot(
+        sub["month_index"],
+        sub["drift_index"],
+        marker="o",
+        label=f"Monthly – {snow_year}",
+    )
+
+ax3.set_xticks(range(12))
+ax3.set_xticklabels(MONTH_LABELS, rotation=0)
+ax3.set_xlabel("Month in snow year (Jul–Jun)")
+ax3.set_ylabel("Monthly snow drift index")
+ax3.grid(alpha=0.3)
+ax3.legend()
+st.pyplot(fig3, use_container_width=True)
+
+st.write("**Monthly snow drift (table):**")
+st.dataframe(df_monthly, use_container_width=True)
