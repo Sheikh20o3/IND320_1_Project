@@ -215,10 +215,9 @@ def fetch_elhub_series(
         return pd.DataFrame()
 
     st.info(
-        f"Bruker MongoDB-collection '{chosen_db.name}.{chosen_coll.name}' "
-        "for production."
+        f"Bruker MongoDB-collection for production."
     )
-    
+
     # Introspekter feltnavn
     sample = chosen_coll.find_one()
     if not sample:
