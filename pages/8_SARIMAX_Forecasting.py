@@ -63,16 +63,22 @@ METEO_LABELS = {
 
 def _to_naive_oslo(series: pd.Series) -> pd.Series:
     """
-    Convert a Series with datetime-like / ISO strings to tz-naive
-    Europe/Oslo datetimes. Safe on strings, tz-aware og allerede-naiv.
+    Parse to datetime, convert tz-aware data til Europe/Oslo og fjern tz.
+    Fungerer både lokalt og på Streamlit Cloud uten .dt-feil.
     """
+    # Steg 1: alltid gjør om til datetime
     s = pd.to_datetime(series, errors="coerce")
-    # Etter to_datetime er .dt alltid tilgjengelig (DatetimeIndex/Series)
-    if getattr(s.dt, "tz", None) is not None:
+
+    # Steg 2: sjekk dtype i stedet for s.dt – dette trigger ikke .dt-feil
+    tz = getattr(s.dtype, "tz", None)
+
+    # Steg 3: hvis tz-aware → konverter til Europe/Oslo og dropp tz
+    if tz is not None:
         s = s.dt.tz_convert("Europe/Oslo").dt.tz_localize(None)
-    else:
-        s = s.dt.tz_localize(None)
+
+    # Hvis tz er None er serien allerede tz-naiv, da gjør vi ingenting
     return s
+
 
 
 # ---------------------------------------------------------------------------
@@ -212,6 +218,8 @@ def fetch_energy_series(price_area: str, dataset: str, year: int) -> pd.DataFram
     else:
         return load_production_series(price_area, year)
 
+    df["time"] = _to_naive_oslo(df["startTime"])
+    df = df.dropna(subset=["time"])
 
 # ---------------------------------------------------------------------------
 # SARIMAX forecasting
