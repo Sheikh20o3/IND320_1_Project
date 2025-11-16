@@ -1,21 +1,17 @@
-# pages/8_SARIMAX_Forecasting.py
-
 import datetime as dt
-import os
-from typing import Tuple, List
+from pathlib import Path
 
 import numpy as np
 import pandas as pd
-import plotly.graph_objects as go
 import requests
 import streamlit as st
+import plotly.graph_objects as go
 from statsmodels.tsa.statespace.sarimax import SARIMAX
 
 from utils_elhub import list_price_areas
 
-# ---------------------------------------------------------------------------
-# Page config
-# ---------------------------------------------------------------------------
+# ---------------- Streamlit page config ---------------- #
+
 st.set_page_config(
     page_title="SARIMAX Forecasting",
     page_icon="🔮",
@@ -24,24 +20,15 @@ st.set_page_config(
 
 st.title("SARIMAX Forecasting – Energy Production & Consumption")
 
-# ---------------------------------------------------------------------------
-# Paths & constants
-# ---------------------------------------------------------------------------
-
-PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-
-CONSUMPTION_CSV = os.path.join(
-    PROJECT_ROOT, "Ass4_Rapporter", "elhub_consumption_2021_2024_all_areas.csv"
+st.caption(
+    "Forecast hourly energy production or consumption using SARIMAX, "
+    "optionally with meteorological variables as exogenous regressors."
 )
 
-PRODUCTION_CSV_2021 = os.path.join(
-    PROJECT_ROOT, "Ass4_Rapporter", "elhub_production_2021_all_areas.csv"
-)
-PRODUCTION_CSV_2022_2024 = os.path.join(
-    PROJECT_ROOT, "Ass4_Rapporter", "elhub_production_2022_2024_all_areas.csv"
-)
+# ---------------- Helper constants ---------------- #
 
-PRICEAREA_COORDS: dict[str, Tuple[float, float]] = {
+# Approximate coordinates per Norwegian price area
+PRICEAREA_COORDS = {
     "NO1": (59.9139, 10.7522),   # Oslo
     "NO2": (58.1467, 7.9956),    # Kristiansand-ish
     "NO3": (63.4305, 10.3951),   # Trondheim
@@ -49,54 +36,58 @@ PRICEAREA_COORDS: dict[str, Tuple[float, float]] = {
     "NO5": (60.39299, 5.32415),  # Bergen
 }
 
+# Labels for ERA5 meteorological variables
 METEO_LABELS = {
     "temperature_2m": "Temperature 2m (°C)",
     "windspeed_10m": "Wind speed 10m (m/s)",
     "precipitation": "Precipitation (mm)",
-    "snowfall": "Snowfall (cm of snow water equivalent)",
+    "snowfall": "Snowfall (cm snow water equivalent)",
 }
 
+# Paths to CSV-files in the repo
+REPO_ROOT = Path(__file__).resolve().parent.parent
+ASS4_DIR = REPO_ROOT / "Ass4_Rapporter"
 
-# ---------------------------------------------------------------------------
-# Helper: timezone handling
-# ---------------------------------------------------------------------------
+CONSUMPTION_CSV = ASS4_DIR / "elhub_consumption_2021_2024_all_areas.csv"
+PRODUCTION_CSV_2021 = ASS4_DIR / "elhub_production_2021_all_areas.csv"
+PRODUCTION_CSV_2022_2024 = ASS4_DIR / "elhub_production_2022_2024_all_areas.csv"
+
+
+# ---------------- Time handling helpers ---------------- #
 
 def _to_naive_oslo(series: pd.Series) -> pd.Series:
     """
-    Parse to datetime, convert tz-aware data til Europe/Oslo og fjern tz.
-    Fungerer både lokalt og på Streamlit Cloud uten .dt-feil.
+    Convert a Series with timestamps (strings or datetime) to tz-naive
+    timestamps in Europe/Oslo.
+    Works for both tz-aware and tz-naive input.
     """
-    # Steg 1: alltid gjør om til datetime
-    s = pd.to_datetime(series, errors="coerce")
-
-    # Steg 2: sjekk dtype i stedet for s.dt – dette trigger ikke .dt-feil
-    tz = getattr(s.dtype, "tz", None)
-
-    # Steg 3: hvis tz-aware → konverter til Europe/Oslo og dropp tz
-    if tz is not None:
-        s = s.dt.tz_convert("Europe/Oslo").dt.tz_localize(None)
-
-    # Hvis tz er None er serien allerede tz-naiv, da gjør vi ingenting
-    return s
+    # Alltid parse som UTC først for å unngå blandet tz
+    dt_utc = pd.to_datetime(series, errors="coerce", utc=True)
+    # Konverter til Europe/Oslo og dropp timezone-info (tz-naive)
+    dt_local = dt_utc.dt.tz_convert("Europe/Oslo").dt.tz_localize(None)
+    return dt_local
 
 
-
-# ---------------------------------------------------------------------------
-# ERA5 / Open-Meteo
-# ---------------------------------------------------------------------------
+# ---------------- Data loading: ERA5 (Open-Meteo) ---------------- #
 
 @st.cache_data(show_spinner=True)
 def fetch_era5_hourly(lat: float, lon: float, year: int) -> pd.DataFrame:
     """
     Fetch hourly ERA5 reanalysis from Open-Meteo for one full year.
-    Returns tz-naive Europe/Oslo timestamps in 'time'.
+    Returns DataFrame with columns: time, temperature_2m, windspeed_10m,
+    snowfall, precipitation.
     """
     base_url = "https://archive-api.open-meteo.com/v1/era5"
 
     start_date = dt.date(year, 1, 1)
     end_date = dt.date(year, 12, 31)
 
-    hourly_vars = list(METEO_LABELS.keys())
+    hourly_vars = [
+        "temperature_2m",
+        "windspeed_10m",
+        "snowfall",
+        "precipitation",
+    ]
 
     params = {
         "latitude": lat,
@@ -116,484 +107,534 @@ def fetch_era5_hourly(lat: float, lon: float, year: int) -> pd.DataFrame:
 
     hourly = data["hourly"]
     df = pd.DataFrame(hourly)
-    df["time"] = _to_naive_oslo(df["time"])
+
+    # Parse time og dropp timezone så det matcher Elhub (tz-naive)
+    df["time"] = pd.to_datetime(df["time"])
+    if getattr(df["time"].dt, "tz", None) is not None:
+        df["time"] = df["time"].dt.tz_convert("Europe/Oslo").dt.tz_localize(None)
+    else:
+        df["time"] = df["time"].dt.tz_localize(None)
 
     return df
 
 
-# ---------------------------------------------------------------------------
-# Energy series loaders (CSV for both Production & Consumption)
-# ---------------------------------------------------------------------------
+# ---------------- Data loading: Elhub CSV ---------------- #
 
 def _load_energy_csv_generic(
-    paths: List[str],
+    paths,
     price_area: str,
     year: int,
-    kind: str,
+    area_col: str = "priceArea",
+    time_col: str = "startTime",
+    value_col: str = "quantityKwh",
 ) -> pd.DataFrame:
     """
-    Generic CSV loader:
-      * paths: list of CSV paths to concat
-      * expects columns: priceArea, startTime, quantityKwh
-      * returns ['time', 'energy_kwh'] for given price_area and year
+    Generic loader for Elhub CSV-files (both production & consumption).
+
+    - Reads one or more CSV paths.
+    - Filters on price area and year.
+    - Converts timestamps to tz-naive Europe/Oslo.
+    - Aggregates to one row per hour: 'time', 'energy_kwh'.
     """
-    existing_paths = [p for p in paths if os.path.exists(p)]
+    frames = []
 
-    if not existing_paths:
-        st.error(
-            f"No CSV files found for {kind.lower()}.\n\n"
-            f"Tried: {paths}"
-        )
-        return pd.DataFrame()
+    for path in paths:
+        path = Path(path)
+        if not path.exists():
+            continue
 
-    dfs = []
-    for path in existing_paths:
-        df_i = pd.read_csv(
-            path,
-            usecols=["priceArea", "startTime", "quantityKwh"],
-            low_memory=False,
-        )
-        dfs.append(df_i)
+        df = pd.read_csv(path)
 
-    df = pd.concat(dfs, ignore_index=True)
+        missing_cols = [c for c in (area_col, time_col, value_col) if c not in df.columns]
+        if missing_cols:
+            continue
 
-    # Filter on price area
-    df = df[df["priceArea"] == price_area].copy()
-    if df.empty:
-        st.warning(
-            f"No {kind.lower()} rows in CSV for price area {price_area}."
-        )
-        return pd.DataFrame()
+        df = df[df[area_col] == price_area].copy()
+        if df.empty:
+            continue
 
-    # Parse time & year
-    df["time"] = _to_naive_oslo(df["startTime"])
-    df = df.dropna(subset=["time"])
+        # Time-håndtering
+        df["time"] = _to_naive_oslo(df[time_col])
+        df = df.dropna(subset=["time"])
 
-    start_dt = dt.datetime(year, 1, 1)
-    end_dt = dt.datetime(year + 1, 1, 1)
+        # Begrens til valgt år
+        start_dt = pd.Timestamp(year=year, month=1, day=1)
+        end_dt = pd.Timestamp(year=year + 1, month=1, day=1)
+        df = df[(df["time"] >= start_dt) & (df["time"] < end_dt)]
+        if df.empty:
+            continue
 
-    df = df[(df["time"] >= start_dt) & (df["time"] < end_dt)]
-    if df.empty:
-        st.warning(
-            f"No {kind.lower()} data in CSV for {price_area} in {year}."
-        )
-        return pd.DataFrame()
+        # Numerisk energikolonne
+        df["energy_kwh"] = pd.to_numeric(df[value_col], errors="coerce")
+        df = df.dropna(subset=["energy_kwh"])
 
-    df["energy_kwh"] = pd.to_numeric(df["quantityKwh"], errors="coerce")
-    df = df.dropna(subset=["energy_kwh"])
+        frames.append(df[["time", "energy_kwh"]])
 
-    return df[["time", "energy_kwh"]].sort_values("time")
+    if not frames:
+        return pd.DataFrame(columns=["time", "energy_kwh"])
+
+    out = pd.concat(frames, ignore_index=True)
+
+    # Aggreger til én rad per time
+    out = (
+        out.groupby("time", as_index=False)["energy_kwh"]
+        .sum()
+        .sort_values("time")
+        .reset_index(drop=True)
+    )
+
+    return out
 
 
 @st.cache_data(show_spinner=True)
 def load_consumption_series(price_area: str, year: int) -> pd.DataFrame:
-    """Consumption from single CSV file."""
-    return _load_energy_csv_generic(
-        [CONSUMPTION_CSV],
+    """Load hourly consumption for one price area & year from CSV."""
+    if not CONSUMPTION_CSV.exists():
+        st.error(
+            "Consumption-CSV-fil ikke funnet.\n\n"
+            f"Forventet sti: '{CONSUMPTION_CSV}'."
+        )
+        return pd.DataFrame(columns=["time", "energy_kwh"])
+
+    df = _load_energy_csv_generic(
+        paths=[CONSUMPTION_CSV],
         price_area=price_area,
         year=year,
-        kind="consumption",
+        area_col="priceArea",
+        time_col="startTime",
+        value_col="quantityKwh",
     )
+
+    if df.empty:
+        st.warning(
+            f"Ingen consumption-data for {price_area} i {year} "
+            f"i CSV-filen '{CONSUMPTION_CSV.name}'."
+        )
+
+    return df
 
 
 @st.cache_data(show_spinner=True)
 def load_production_series(price_area: str, year: int) -> pd.DataFrame:
-    """Production from 2021 + 2022–2024 CSV files."""
-    return _load_energy_csv_generic(
-        [PRODUCTION_CSV_2021, PRODUCTION_CSV_2022_2024],
+    """Load hourly production for one price area & year from CSV."""
+    paths = []
+    if PRODUCTION_CSV_2021.exists():
+        paths.append(PRODUCTION_CSV_2021)
+    if PRODUCTION_CSV_2022_2024.exists():
+        paths.append(PRODUCTION_CSV_2022_2024)
+
+    if not paths:
+        st.error(
+            "Production-CSV-filer ikke funnet.\n\n"
+            f"Forventet minst én av:\n"
+            f"- {PRODUCTION_CSV_2021}\n"
+            f"- {PRODUCTION_CSV_2022_2024}"
+        )
+        return pd.DataFrame(columns=["time", "energy_kwh"])
+
+    df = _load_energy_csv_generic(
+        paths=paths,
         price_area=price_area,
         year=year,
-        kind="production",
+        area_col="priceArea",
+        time_col="startTime",
+        value_col="quantityKwh",
     )
+
+    if df.empty:
+        st.warning(
+            f"Ingen production-data for {price_area} i {year} "
+            f"i production-CSV-filene."
+        )
+
+    return df
 
 
 @st.cache_data(show_spinner=True)
-def fetch_energy_series(price_area: str, dataset: str, year: int) -> pd.DataFrame:
+def fetch_energy_series(
+    price_area: str,
+    dataset: str,
+    year: int,
+) -> pd.DataFrame:
     """
-    Wrapper for energy series.
-      dataset: "Production" or "Consumption"
+    Wrapper brukt av siden.
+
+    dataset: "Production" eller "Consumption"
+    Returnerer DataFrame med ['time', 'energy_kwh'].
     """
     if dataset == "Consumption":
         return load_consumption_series(price_area, year)
     else:
         return load_production_series(price_area, year)
 
-    df["time"] = _to_naive_oslo(df["startTime"])
-    df = df.dropna(subset=["time"])
 
-# ---------------------------------------------------------------------------
-# SARIMAX forecasting
-# ---------------------------------------------------------------------------
+# ---------------- SARIMAX helper ---------------- #
 
-def run_sarimax_forecast(
-    df_all: pd.DataFrame,
-    exog_cols: List[str],
-    train_start: dt.datetime,
-    train_end: dt.datetime,
-    horizon_hours: int,
-    order: tuple,
-    seasonal_order: tuple,
-    trend: str,
-) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
+def prepare_endog_and_exog(
+    df_energy: pd.DataFrame,
+    df_met: pd.DataFrame | None,
+    exog_keys: list[str],
+    train_start: pd.Timestamp,
+    train_end: pd.Timestamp,
+    forecast_hours: int,
+):
     """
-    Run SARIMAX with given parameters.
-
-    df_all: DataFrame with columns ['time', 'energy_kwh', (exog...)]
-    exog_cols: list of column names to use as exogenous
-    Returns:
-      df_train, df_future, df_fc
+    Align energy & meteorology, subset train period, and build forecast index.
+    Returns (y_train, y_future_index, exog_train, exog_forecast).
     """
-    df_all = df_all.sort_values("time").copy()
+    # Energy til timeindeks
+    df_energy = df_energy.copy()
+    df_energy["time"] = pd.to_datetime(df_energy["time"])
+    df_energy = df_energy.sort_values("time")
+    df_energy = df_energy.set_index("time")
 
-    # Split into train / future
-    mask_train = (df_all["time"] >= train_start) & (df_all["time"] <= train_end)
-    df_train = df_all.loc[mask_train].copy()
-    df_future = df_all.loc[df_all["time"] > train_end].copy()
+    # Sikre timesfrekvens
+    y_all = df_energy["energy_kwh"].asfreq("H")
+    # Fyll hull for å unngå SARIMAX-trøbbel
+    y_all = y_all.interpolate(limit_direction="both")
 
-    if df_train.empty:
-        raise ValueError("Training set is empty – adjust training period.")
+    # Treningsperiode (inklusiv)
+    y_train = y_all[(y_all.index >= train_start) & (y_all.index <= train_end)]
 
-    if df_future.empty:
-        raise ValueError(
-            "No future data after training end – reduce training end date "
-            "or check that the year contains data."
-        )
+    if y_train.empty:
+        raise ValueError("Treningsperioden er tom – juster datoene.")
 
-    # Limit forecast horizon to available future rows
-    steps = min(horizon_hours, len(df_future))
-    if steps <= 0:
-        raise ValueError("Forecast horizon is zero – check horizon or period.")
+    # Forecast-horisont
+    forecast_start = train_end + pd.Timedelta(hours=1)
+    forecast_index = pd.date_range(
+        start=forecast_start,
+        periods=forecast_hours,
+        freq="H",
+    )
 
-    df_future = df_future.iloc[:steps].copy()
+    exog_train = None
+    exog_forecast = None
 
-    y_train = df_train["energy_kwh"]
-    y_future_actual = df_future["energy_kwh"]
+    if exog_keys and df_met is not None:
+        df_met = df_met.copy()
+        df_met["time"] = pd.to_datetime(df_met["time"])
+        df_met = df_met.set_index("time").sort_index()
 
-    if exog_cols:
-        exog_train = df_train[exog_cols]
-        exog_future = df_future[exog_cols]
-    else:
-        exog_train = None
-        exog_future = None
+        # Bare valgte exogene variabler
+        df_met = df_met[exog_keys]
 
-    # Build & fit model
+        # Reindekser til å matche energy-indeks + forecast-indeks
+        exog_all = df_met.reindex(y_all.index.union(forecast_index))
+        exog_all = exog_all.interpolate(limit_direction="both")
+
+        exog_train = exog_all.loc[y_train.index]
+        exog_forecast = exog_all.loc[forecast_index]
+
+    return y_train, forecast_index, exog_train, exog_forecast
+
+
+def run_sarimax(
+    y_train: pd.Series,
+    forecast_steps: int,
+    exog_train=None,
+    exog_forecast=None,
+    order=(1, 1, 1),
+    seasonal_order=(1, 1, 1, 24),
+):
+    """Fit SARIMAX and return (results, forecast_mean, lower_ci, upper_ci)."""
     model = SARIMAX(
-        endog=y_train,
+        y_train,
         exog=exog_train,
         order=order,
         seasonal_order=seasonal_order,
-        trend=trend,
         enforce_stationarity=False,
         enforce_invertibility=False,
     )
 
     results = model.fit(disp=False)
 
-    # Dynamic multi-step forecast into the future
-    fc_res = results.get_forecast(steps=steps, exog=exog_future)
-    fc_mean = fc_res.predicted_mean
-    ci = fc_res.conf_int(alpha=0.05)
+    if exog_forecast is not None:
+        forecast_res = results.get_forecast(steps=forecast_steps, exog=exog_forecast)
+    else:
+        forecast_res = results.get_forecast(steps=forecast_steps)
 
-    # Conf-int column names (e.g. 'lower energy_kwh', 'upper energy_kwh')
-    lower_col = ci.columns[0]
-    upper_col = ci.columns[1]
+    forecast_mean = forecast_res.predicted_mean
+    ci = forecast_res.conf_int()
+    # Statsmodels gir typisk 'lower energy_kwh', 'upper energy_kwh'
+    lower_ci = ci.iloc[:, 0]
+    upper_ci = ci.iloc[:, 1]
 
-    df_fc = pd.DataFrame(
-        {
-            "time": df_future["time"].values,
-            "forecast": fc_mean.values,
-            "lower": ci[lower_col].values,
-            "upper": ci[upper_col].values,
-            "actual": y_future_actual.values,
-        }
-    )
-
-    return df_train, df_future, df_fc
+    return results, forecast_mean, lower_ci, upper_ci
 
 
-# ---------------------------------------------------------------------------
-# UI controls
-# ---------------------------------------------------------------------------
+# ---------------- UI Controls ---------------- #
 
-# Price areas (prefer DB list if available)
+# Price area selection
+default_areas = ["NO1", "NO2", "NO3", "NO4", "NO5"]
 try:
     areas_from_db = list_price_areas()
-    area_options = areas_from_db or ["NO1", "NO2", "NO3", "NO4", "NO5"]
+    area_options = areas_from_db or default_areas
 except Exception:
-    area_options = ["NO1", "NO2", "NO3", "NO4", "NO5"]
+    area_options = default_areas
 
 col_top1, col_top2, col_top3 = st.columns(3)
 
 with col_top1:
-    price_area = st.selectbox("Price area", options=area_options, index=0)
+    price_area = st.selectbox(
+        "Price area",
+        options=area_options,
+        index=0,
+    )
 
 with col_top2:
-    year = st.selectbox("Year", options=[2021, 2022, 2023, 2024], index=0)
-
-with col_top3:
     dataset = st.radio(
-        "Energy series",
-        ["Production", "Consumption"],
+        "Dataset",
+        options=["Production", "Consumption"],
         horizontal=True,
     )
 
-st.caption(
-    "Forecast hourly energy (production or consumption) using a SARIMAX model "
-    "with optional meteorological exogenous variables."
-)
-
-# Meteorological exogenous variables
-exog_keys = st.multiselect(
-    "Exogenous variables (ERA5)",
-    options=list(METEO_LABELS.keys()),
-    format_func=lambda k: METEO_LABELS[k],
-    default=["temperature_2m"],
-)
-
-# Training period and horizon
-st.subheader("Training period & forecast horizon")
-
-col_time1, col_time2, col_time3 = st.columns(3)
-
-with col_time1:
-    train_start_date = st.date_input(
-        "Training start date",
-        value=dt.date(year, 1, 1),
-        min_value=dt.date(year, 1, 1),
-        max_value=dt.date(year, 12, 31),
-    )
-
-with col_time2:
-    train_end_date = st.date_input(
-        "Training end date",
-        value=dt.date(year, 9, 30),
-        min_value=dt.date(year, 1, 1),
-        max_value=dt.date(year, 12, 31),
-    )
-
-with col_time3:
-    horizon_days = st.slider(
-        "Forecast horizon (days, hourly resolution)",
-        min_value=1,
-        max_value=60,
-        value=7,
-        step=1,
-    )
-
-horizon_hours = horizon_days * 24
-
-# SARIMAX parameters
-st.subheader("SARIMAX parameters")
-
-col_ord1, col_ord2, col_ord3 = st.columns(3)
-with col_ord1:
-    p = st.number_input("AR order (p)", min_value=0, max_value=5, value=1, step=1)
-with col_ord2:
-    d = st.number_input("Differencing (d)", min_value=0, max_value=2, value=0, step=1)
-with col_ord3:
-    q = st.number_input("MA order (q)", min_value=0, max_value=5, value=1, step=1)
-
-col_sord1, col_sord2, col_sord3, col_sord4 = st.columns(4)
-with col_sord1:
-    P = st.number_input("Seasonal AR (P)", min_value=0, max_value=3, value=1, step=1)
-with col_sord2:
-    D = st.number_input("Seasonal diff (D)", min_value=0, max_value=2, value=0, step=1)
-with col_sord3:
-    Q = st.number_input("Seasonal MA (Q)", min_value=0, max_value=3, value=1, step=1)
-with col_sord4:
-    m = st.selectbox(
-        "Seasonal period m",
-        options=[24, 24 * 7],
+with col_top3:
+    year = st.selectbox(
+        "Year",
+        options=[2021, 2022, 2023, 2024],
         index=0,
-        format_func=lambda v: f"{v} (daily)" if v == 24 else f"{v} (weekly)",
     )
-
-trend = st.selectbox(
-    "Trend",
-    options=["n", "c", "t", "ct"],
-    index=1,  # default 'c' (constant)
-    format_func=lambda t: {
-        "n": "n (no trend)",
-        "c": "c (constant)",
-        "t": "t (linear trend)",
-        "ct": "ct (constant + trend)",
-    }[t],
-)
-
-order = (int(p), int(d), int(q))
-seasonal_order = (int(P), int(D), int(Q), int(m))
 
 st.markdown("---")
 
-run_button = st.button("Run SARIMAX forecast", type="primary")
+col_param1, col_param2 = st.columns(2)
 
-# ---------------------------------------------------------------------------
-# Data fetching & forecasting
-# ---------------------------------------------------------------------------
+with col_param1:
+    st.subheader("ARIMA parameters")
 
-if run_button:
-    if train_start_date > train_end_date:
-        st.error("Training start date must be before training end date.")
-        st.stop()
+    p = st.number_input("AR order (p)", min_value=0, max_value=5, value=1, step=1)
+    d = st.number_input("Differencing (d)", min_value=0, max_value=2, value=1, step=1)
+    q = st.number_input("MA order (q)", min_value=0, max_value=5, value=1, step=1)
 
+with col_param2:
+    st.subheader("Seasonal parameters")
+
+    P = st.number_input("Seasonal AR (P)", min_value=0, max_value=3, value=1, step=1)
+    D = st.number_input("Seasonal differencing (D)", min_value=0, max_value=2, value=1, step=1)
+    Q = st.number_input("Seasonal MA (Q)", min_value=0, max_value=3, value=1, step=1)
+    m = st.selectbox(
+        "Seasonal period (m)",
+        options=[24, 24 * 7],
+        index=0,
+        format_func=lambda x: f"{x} hours ({'daily' if x == 24 else 'weekly'})",
+    )
+
+st.markdown("---")
+
+col_train, col_forecast = st.columns(2)
+
+with col_train:
+    st.subheader("Training period (within selected year)")
+
+    train_start_date = st.date_input("Training start date", dt.date(year, 1, 1))
+    train_end_date = st.date_input("Training end date (inclusive)", dt.date(year, 12, 31))
+
+with col_forecast:
+    st.subheader("Forecast horizon")
+
+    forecast_days = st.slider(
+        "Forecast horizon (days ahead)",
+        min_value=1,
+        max_value=60,
+        value=14,
+        step=1,
+    )
+    forecast_hours = forecast_days * 24
+
+st.markdown("---")
+
+st.subheader("Exogenous variables (optional)")
+
+exog_keys = st.multiselect(
+    "Select meteorological variables to include as exogenous regressors",
+    options=list(METEO_LABELS.keys()),
+    format_func=lambda k: METEO_LABELS[k],
+)
+
+st.markdown("---")
+
+# ---------------- Load data ---------------- #
+
+with st.spinner("Loading Elhub energy data..."):
+    df_energy = fetch_energy_series(price_area, dataset, year)
+
+if df_energy.empty:
+    st.error(
+        f"No {dataset.lower()} data available for {price_area} in {year}. "
+        "Check that the corresponding CSV files are present in the repo."
+    )
+    st.stop()
+
+# Oppdater treningsgrenser basert på data
+min_time = pd.to_datetime(df_energy["time"]).min()
+max_time = pd.to_datetime(df_energy["time"]).max()
+
+# Datoer fra UI -> timestamps
+train_start = pd.Timestamp.combine(train_start_date, dt.time(0, 0))
+train_end = pd.Timestamp.combine(train_end_date, dt.time(23, 0))
+
+# Klipp innenfor tilgjengelig data
+if train_start < min_time:
+    train_start = min_time
+if train_end > max_time:
+    train_end = max_time
+if train_end <= train_start:
+    st.error("Training end must be after training start.")
+    st.stop()
+
+# Sjekk at forecast passer inni tilgjengelig data
+forecast_start = train_end + pd.Timedelta(hours=1)
+max_forecast_end = max_time
+
+available_hours = int((max_forecast_end - forecast_start) / pd.Timedelta(hours=1)) + 1
+if available_hours <= 0:
+    st.error(
+        "Ingen data tilgjengelig etter treningsperioden i valgt år – "
+        "kan ikke lage forecast-horisont. Prøv å avslutte treningen tidligere."
+    )
+    st.stop()
+
+if forecast_hours > available_hours:
+    st.warning(
+        f"Ønsket forecast-horisont på {forecast_hours} timer er større enn "
+        f"tilgjengelig data ({available_hours} timer). Bruker {available_hours} timer i stedet."
+    )
+    forecast_hours = available_hours
+
+# ---------------- Fetch meteorology if needed ---------------- #
+
+df_met = None
+if exog_keys:
     if price_area not in PRICEAREA_COORDS:
-        st.error(f"No coordinates defined for price area {price_area}.")
+        st.error(f"Ingen koordinater definert for prisområde {price_area}. Kan ikke hente ERA5.")
         st.stop()
-
-    # Convert training dates to datetimes
-    train_start_dt = dt.datetime.combine(train_start_date, dt.time(0, 0))
-    # Use end-of-day 23:00 for training end
-    train_end_dt = dt.datetime.combine(train_end_date, dt.time(23, 0))
 
     lat, lon = PRICEAREA_COORDS[price_area]
 
-    with st.spinner("Fetching ERA5 and energy series..."):
+    with st.spinner("Downloading ERA5 meteorological data from Open-Meteo..."):
         try:
             df_met = fetch_era5_hourly(lat, lon, year)
         except Exception as e:
             st.error(f"Failed to fetch ERA5 data: {e}")
-            st.stop()
+            df_met = None
 
-        df_energy = fetch_energy_series(price_area, dataset, year)
+# ---------------- Run SARIMAX ---------------- #
 
-    if df_energy.empty:
-        st.error(
-            f"No {dataset.lower()} data available for {price_area} in {year}. "
-            "Check that CSV files exist and contain this area/year."
-        )
-        st.stop()
+run_button = st.button("Run SARIMAX forecast")
 
-    # Align and merge exogenous variables (if any selected)
-    df_energy = df_energy.copy()
-    df_energy["time"] = _to_naive_oslo(df_energy["time"])
-
-    if exog_keys:
-        missing_cols = [c for c in exog_keys if c not in df_met.columns]
-        if missing_cols:
-            st.error(
-                f"Selected exogenous variables not found in ERA5 data: {missing_cols}"
-            )
-            st.stop()
-
-        df_met_small = df_met[["time"] + exog_keys].copy()
-        df_met_small["time"] = _to_naive_oslo(df_met_small["time"])
-
-        df_all = pd.merge(
-            df_energy,
-            df_met_small,
-            on="time",
-            how="inner",
-        )
-    else:
-        df_all = df_energy.copy()
-
-    # Drop any NA in target or selected exog
-    cols_required = ["time", "energy_kwh"] + exog_keys
-    df_all = df_all.dropna(subset=cols_required)
-
-    if df_all.empty:
-        st.error(
-            "Merged dataset is empty after aligning energy and meteorology. "
-            "Try another year, price area or exogenous selection."
-        )
-        st.stop()
-
+if run_button:
     try:
-        df_train, df_future, df_fc = run_sarimax_forecast(
-            df_all=df_all,
-            exog_cols=exog_keys,
-            train_start=train_start_dt,
-            train_end=train_end_dt,
-            horizon_hours=horizon_hours,
-            order=order,
-            seasonal_order=seasonal_order,
-            trend=trend,
+        y_train, forecast_index, exog_train, exog_forecast = prepare_endog_and_exog(
+            df_energy=df_energy,
+            df_met=df_met,
+            exog_keys=exog_keys,
+            train_start=train_start,
+            train_end=train_end,
+            forecast_hours=forecast_hours,
         )
+
+        order = (int(p), int(d), int(q))
+        seasonal_order = (int(P), int(D), int(Q), int(m))
+
+        with st.spinner("Fitting SARIMAX model..."):
+            results, forecast_mean, lower_ci, upper_ci = run_sarimax(
+                y_train=y_train,
+                forecast_steps=len(forecast_index),
+                exog_train=exog_train,
+                exog_forecast=exog_forecast,
+                order=order,
+                seasonal_order=seasonal_order,
+            )
+
     except Exception as e:
-        st.error(f"SARIMAX fitting/forecasting failed: {e}")
+        st.error(f"Failed to fit SARIMAX model or produce forecast: {e}")
         st.stop()
 
-    # -----------------------------------------------------------------------
-    # Plots
-    # -----------------------------------------------------------------------
+    # Bygg figur
     st.subheader("Forecast results")
 
-    # Main time series plot
-    fig_ts = go.Figure()
+    # Faktiske data for forecast-horisonten (for sammenligning)
+    df_energy_idx = df_energy.copy()
+    df_energy_idx["time"] = pd.to_datetime(df_energy_idx["time"])
+    df_energy_idx = df_energy_idx.set_index("time").sort_index()
+    y_all = df_energy_idx["energy_kwh"].asfreq("H")
+    y_all = y_all.interpolate(limit_direction="both")
 
-    # Training data
-    fig_ts.add_trace(
+    y_train_full = y_all[(y_all.index >= train_start) & (y_all.index <= train_end)]
+    y_actual_future = y_all.reindex(forecast_index)
+
+    fig = go.Figure()
+
+    # Treningsdata
+    fig.add_trace(
         go.Scatter(
-            x=df_train["time"],
-            y=df_train["energy_kwh"],
+            x=y_train_full.index,
+            y=y_train_full.values,
             mode="lines",
-            name="Train (observed)",
+            name="Training data",
         )
     )
 
-    # Actual future
-    fig_ts.add_trace(
-        go.Scatter(
-            x=df_future["time"],
-            y=df_future["energy_kwh"],
-            mode="lines",
-            name="Future (actual)",
+    # Faktiske fremtidige verdier (hvis de finnes)
+    if not y_actual_future.isna().all():
+        fig.add_trace(
+            go.Scatter(
+                x=y_actual_future.index,
+                y=y_actual_future.values,
+                mode="lines",
+                name="Actual (future)",
+            )
         )
-    )
 
-    # Forecast mean
-    fig_ts.add_trace(
+    # Forecast
+    fig.add_trace(
         go.Scatter(
-            x=df_fc["time"],
-            y=df_fc["forecast"],
+            x=forecast_index,
+            y=forecast_mean.values,
             mode="lines",
             name="Forecast",
         )
     )
 
-    # Confidence interval band
-    fig_ts.add_trace(
+    # Konfidensintervall
+    fig.add_trace(
         go.Scatter(
-            x=pd.concat([df_fc["time"], df_fc["time"][::-1]]),
-            y=pd.concat([df_fc["upper"], df_fc["lower"][::-1]]),
-            fill="toself",
+            x=forecast_index,
+            y=upper_ci.values,
             mode="lines",
             line=dict(width=0),
-            name="95% CI",
-            opacity=0.2,
+            showlegend=False,
+            hoverinfo="skip",
+        )
+    )
+    fig.add_trace(
+        go.Scatter(
+            x=forecast_index,
+            y=lower_ci.values,
+            mode="lines",
+            line=dict(width=0),
+            fill="tonexty",
+            name="95% confidence interval",
+            hoverinfo="skip",
         )
     )
 
-    fig_ts.update_layout(
+    fig.update_layout(
         xaxis_title="Time",
         yaxis_title=f"{dataset} energy (kWh)",
-        height=550,
-        legend=dict(
-            orientation="h",
-            yanchor="bottom",
-            y=1.02,
-            xanchor="left",
-            x=0,
-        ),
-        shapes=[
-            dict(
-                type="line",
-                x0=train_end_dt,
-                x1=train_end_dt,
-                y0=min(df_all["energy_kwh"]),
-                y1=max(df_all["energy_kwh"]),
-                line=dict(dash="dash"),
-            )
-        ],
+        height=500,
+        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="left", x=0),
     )
 
-    st.plotly_chart(fig_ts, use_container_width=True)
+    st.plotly_chart(fig, use_container_width=True)
 
-    # Show head of data
-    with st.expander("Data preview (train, future, forecast)"):
-        st.write("Training data:")
-        st.dataframe(df_train.head(), use_container_width=True)
-        st.write("Future data (actual):")
-        st.dataframe(df_future.head(), use_container_width=True)
-        st.write("Forecast (incl. CI & actual):")
-        st.dataframe(df_fc.head(), use_container_width=True)
+    with st.expander("Forecast values (head)"):
+        df_out = pd.DataFrame(
+            {
+                "time": forecast_index,
+                "forecast": forecast_mean.values,
+                "lower_95": lower_ci.values,
+                "upper_95": upper_ci.values,
+            }
+        )
+        st.dataframe(df_out.head(), use_container_width=True)
