@@ -52,6 +52,9 @@ CONSUMPTION_CSV = ASS4_DIR / "elhub_consumption_2021_2024_all_areas.csv"
 PRODUCTION_CSV_2021 = ASS4_DIR / "elhub_production_2021_all_areas.csv"
 PRODUCTION_CSV_2022_2024 = ASS4_DIR / "elhub_production_2022_2024_all_areas.csv"
 
+# Vi begrenser treningsdatasettet for å holde SARIMAX kjapp
+MAX_TRAIN_POINTS = 2000  # ~ 83 dager med timesdata
+
 
 # ---------------- Time handling helpers ---------------- #
 
@@ -277,10 +280,14 @@ def prepare_endog_and_exog(
     train_start: pd.Timestamp,
     train_end: pd.Timestamp,
     forecast_hours: int,
+    max_train_points: int = MAX_TRAIN_POINTS,
 ):
     """
     Align energy & meteorology, subset train period, and build forecast index.
     Returns (y_train, y_future_index, exog_train, exog_forecast).
+
+    Vi begrenser treningsdatasettet til maks `max_train_points` siste observasjoner
+    for å gjøre SARIMAX raskere (spesielt på Streamlit Cloud).
     """
     # Energy til timeindeks
     df_energy = df_energy.copy()
@@ -294,7 +301,8 @@ def prepare_endog_and_exog(
     y_all = y_all.interpolate(limit_direction="both")
 
     # Treningsperiode (inklusiv)
-    y_train = y_all[(y_all.index >= train_start) & (y_all.index <= train_end)]
+    mask_train = (y_all.index >= train_start) & (y_all.index <= train_end)
+    y_train = y_all.loc[mask_train]
 
     if y_train.empty:
         raise ValueError("Treningsperioden er tom – juster datoene.")
@@ -325,6 +333,12 @@ def prepare_endog_and_exog(
         exog_train = exog_all.loc[y_train.index]
         exog_forecast = exog_all.loc[forecast_index]
 
+    # BEGRENS TRENINGSLENGDE: bare siste max_train_points observasjoner
+    if len(y_train) > max_train_points:
+        y_train = y_train.iloc[-max_train_points:]
+        if exog_train is not None:
+            exog_train = exog_train.loc[y_train.index]
+
     return y_train, forecast_index, exog_train, exog_forecast
 
 
@@ -344,9 +358,14 @@ def run_sarimax(
         seasonal_order=seasonal_order,
         enforce_stationarity=False,
         enforce_invertibility=False,
+        simple_differencing=True,  # litt raskere og mer stabilt
     )
 
-    results = model.fit(disp=False)
+    results = model.fit(
+        method="lbfgs",
+        maxiter=50,
+        disp=False,
+    )
 
     if exog_forecast is not None:
         forecast_res = results.get_forecast(steps=forecast_steps, exog=exog_forecast)
@@ -395,6 +414,10 @@ with col_top3:
         index=0,
     )
 
+st.markdown(
+    f"*Merk: treningsdatasettet begrenses automatisk til de siste "
+    f"{MAX_TRAIN_POINTS} timene i valgt treningsperiode for å holde modellen rask.*"
+)
 st.markdown("---")
 
 col_param1, col_param2 = st.columns(2)
@@ -531,6 +554,7 @@ if run_button:
             train_start=train_start,
             train_end=train_end,
             forecast_hours=forecast_hours,
+            max_train_points=MAX_TRAIN_POINTS,
         )
 
         order = (int(p), int(d), int(q))
