@@ -107,7 +107,7 @@ def _load_consumption_from_csv(price_area: str, year: int) -> pd.DataFrame:
         )
         return pd.DataFrame()
 
-    st.info(f"Leser consumption-data fra CSV-fil: {path}")
+    st.info(f"Bruker MongoDB-collection for consumption.")
 
     df = pd.read_csv(path)
 
