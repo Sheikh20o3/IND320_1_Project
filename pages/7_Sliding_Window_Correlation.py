@@ -218,7 +218,7 @@ def fetch_elhub_series(
         f"Bruker MongoDB-collection '{chosen_db.name}.{chosen_coll.name}' "
         "for production."
     )
-
+    
     # Introspekter feltnavn
     sample = chosen_coll.find_one()
     if not sample:
