@@ -26,86 +26,58 @@ with colB:
 
 st.caption(f"Active price area: **{pa}**")
 
-# ---- Time range and variables ----
+# ---- Time range ----
 years = list(range(2019, 2025))
 year = st.selectbox("Year", years, index=years.index(2021))
 start_date = f"{year}-01-01"
 end_date = f"{year}-12-31"
 
-# Recommended ERA5 variables
-default_hourly = [
-    "temperature_2m",
-    "precipitation",
-    "wind_speed_10m",
-    "relative_humidity_2m",
-    "surface_pressure",
-    "cloud_cover",
-]
-vars_chosen = st.multiselect(
-    "Choose variables (ERA5)",
-    default_hourly,
-    default=default_hourly,
-)
-
+# ---- Download ERA5 data (fixed recommended variables, no separate UI multiselect) ----
 @st.cache_data(show_spinner=True)
-def _load_met(pa, sd, ed, hourly):
-    return download_open_meteo(price_area=pa, start_date=sd, end_date=ed, hourly=hourly)
+def _load_met(pa: str, sd: str, ed: str) -> pd.DataFrame:
+    """
+    Cached download of ERA5 data from Open-Meteo for a given price area and year.
+    We rely on the default/recommended hourly variables in download_open_meteo.
+    """
+    return download_open_meteo(price_area=pa, start_date=sd, end_date=ed)
 
-df = _load_met(pa, start_date, end_date, tuple(vars_chosen))
+df = _load_met(pa, start_date, end_date)
 if df.empty:
     st.warning("No meteorological data returned for this selection.")
     st.stop()
 
 # Note: New A should not display raw data tables; hence no st.dataframe here.
 
-tab_stl, tab_spec = st.tabs(["STL", "Spectrogram"])
+# ---- Helper functions for STL parameter handling ----
+def _to_odd(x: int) -> int:
+    x = int(x)
+    return x if x % 2 == 1 else x + 1
 
-# -------------------------- STL TAB --------------------------
-with tab_stl:
-    st.subheader("STL decomposition")
-    target = st.selectbox(
-        "Choose series for STL",
-        [c for c in df.columns if c != "time"],
-        index=0
-    )
 
-    col1, col2, col3, col4 = st.columns(4)
-    with col1:
-        period = st.number_input(
-            "Period (hours)",
-            min_value=2, value=168, step=1,
-            help="Weekly rhythm = 24*7=168"
-        )
-    with col2:
-        seasonal = st.number_input(
-            "Seasonal (LOESS window, odd)",
-            min_value=7, value=13, step=2,
-            help="Must be odd and at least 7"
-        )
-    with col3:
-        trend = st.number_input(
-            "Trend (LOESS window, odd)",
-            min_value=3, value=301, step=2,
-            help="Must be odd and at least 3"
-        )
-    with col4:
-        robust = st.checkbox("Robust", value=True)
+def _clamp(v: int, lo: int, hi: int) -> int:
+    return int(max(lo, min(hi, v)))
 
-    # --- Build hourly time series without NaN ---
+
+@st.cache_data(show_spinner=False)
+def compute_stl(
+    df: pd.DataFrame,
+    target: str,
+    period: int,
+    seasonal: int,
+    trend: int,
+    robust: bool,
+):
+    """
+    Cached STL decomposition so that we do not recompute when only
+    spectrogram parameters or other controls change.
+    """
+    # Build hourly time series without NaN
     ts = pd.Series(
         pd.to_numeric(df[target], errors="coerce").values,
-        index=pd.to_datetime(df["time"])
+        index=pd.to_datetime(df["time"]),
     )
     ts = ts.asfreq("H").interpolate(limit_direction="both")
     nobs = int(ts.size)
-
-    # --- Helpers to ensure safe STL parameters ---
-    def _to_odd(x: int) -> int:
-        x = int(x)
-        return x if x % 2 == 1 else x + 1
-
-    def _clamp(v: int, lo: int, hi: int) -> int:
-        return int(max(lo, min(hi, v)))
 
     # Minimum requirements
     period = int(max(2, int(period)))
@@ -147,7 +119,6 @@ with tab_stl:
     except Exception:
         seasonal = _to_odd(_clamp(max(7, period + 5), 7, max(7, nobs - 3)))
         trend = _to_odd(_clamp(max(3, period * 3 + 1), 3, max(3, nobs - 3)))
-        st.info("Parameters for STL were automatically adjusted to avoid errors.")
         stl = STL(
             ts,
             period=int(period),
@@ -157,6 +128,90 @@ with tab_stl:
         )
 
     res = stl.fit()
+    x_index = res.observed.index
+
+    # Return components as simple Series to keep the cache payload clean
+    return x_index, res.observed, res.trend, res.seasonal, res.resid
+
+
+@st.cache_data(show_spinner=False)
+def compute_spectrogram(
+    df: pd.DataFrame,
+    target: str,
+    window_length: int,
+    overlap: int,
+):
+    """
+    Cached spectrogram computation so that we do not recompute when only
+    STL parameters or other controls change.
+    """
+    sig = pd.Series(
+        pd.to_numeric(df[target], errors="coerce").values,
+        index=pd.to_datetime(df["time"]),
+    ).asfreq("H")
+    sig = sig.interpolate(limit_direction="both").values
+
+    f, t, Sxx = spectrogram(
+        sig,
+        fs=1.0,
+        nperseg=int(window_length),
+        noverlap=int(overlap),
+        scaling="density",
+        mode="magnitude",
+    )
+    Sxx_log = 10 * np.log10(Sxx + 1e-12)
+
+    return f, t, Sxx_log
+
+
+tab_stl, tab_spec = st.tabs(["STL", "Spectrogram"])
+
+# -------------------------- STL TAB --------------------------
+with tab_stl:
+    st.subheader("STL decomposition")
+    target = st.selectbox(
+        "Choose series for STL",
+        [c for c in df.columns if c != "time"],
+        index=0,
+    )
+
+    col1, col2, col3, col4 = st.columns(4)
+    with col1:
+        period = st.number_input(
+            "Period (hours)",
+            min_value=2,
+            value=168,
+            step=1,
+            help="Weekly rhythm = 24*7=168",
+        )
+    with col2:
+        seasonal = st.number_input(
+            "Seasonal (LOESS window, odd)",
+            min_value=7,
+            value=13,
+            step=2,
+            help="Must be odd and at least 7",
+        )
+    with col3:
+        trend = st.number_input(
+            "Trend (LOESS window, odd)",
+            min_value=3,
+            value=301,
+            step=2,
+            help="Must be odd and at least 3",
+        )
+    with col4:
+        robust = st.checkbox("Robust", value=True)
+
+    # Use cached STL computation
+    x_index, observed, trend_comp, seasonal_comp, resid_comp = compute_stl(
+        df,
+        target,
+        period,
+        seasonal,
+        trend,
+        robust,
+    )
 
     # --- Plot STL components with Plotly (interactive) ---
     fig_stl = make_subplots(
@@ -167,23 +222,25 @@ with tab_stl:
         subplot_titles=("Observed", "Trend", "Seasonal", "Residual"),
     )
 
-    x_index = res.observed.index
-
     fig_stl.add_trace(
-        go.Scatter(x=x_index, y=res.observed, name="Observed"),
-        row=1, col=1,
+        go.Scatter(x=x_index, y=observed, name="Observed"),
+        row=1,
+        col=1,
     )
     fig_stl.add_trace(
-        go.Scatter(x=x_index, y=res.trend, name="Trend"),
-        row=2, col=1,
+        go.Scatter(x=x_index, y=trend_comp, name="Trend"),
+        row=2,
+        col=1,
     )
     fig_stl.add_trace(
-        go.Scatter(x=x_index, y=res.seasonal, name="Seasonal"),
-        row=3, col=1,
+        go.Scatter(x=x_index, y=seasonal_comp, name="Seasonal"),
+        row=3,
+        col=1,
     )
     fig_stl.add_trace(
-        go.Scatter(x=x_index, y=res.resid, name="Residual"),
-        row=4, col=1,
+        go.Scatter(x=x_index, y=resid_comp, name="Residual"),
+        row=4,
+        col=1,
     )
 
     fig_stl.update_layout(
@@ -221,26 +278,18 @@ with tab_spec:
         step=16,
     )
 
-    sig = pd.Series(
-        pd.to_numeric(df[target2], errors="coerce").values,
-        index=pd.to_datetime(df["time"]),
-    ).asfreq("H")
-    sig = sig.interpolate(limit_direction="both").values
-
-    f, t, Sxx = spectrogram(
-        sig,
-        fs=1.0,
-        nperseg=int(window_length),
-        noverlap=int(overlap),
-        scaling="density",
-        mode="magnitude",
+    # Use cached spectrogram computation
+    f, t_values, Sxx_log = compute_spectrogram(
+        df,
+        target2,
+        window_length,
+        overlap,
     )
-    Sxx_log = 10 * np.log10(Sxx + 1e-12)
 
     # --- Plot spectrogram as interactive heatmap (Plotly) ---
     fig_spec = go.Figure(
         data=go.Heatmap(
-            x=t,
+            x=t_values,
             y=f,
             z=Sxx_log,
             colorbar=dict(title="dB"),
