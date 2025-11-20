@@ -32,14 +32,25 @@ year = st.selectbox("Year", years, index=years.index(2021))
 start_date = f"{year}-01-01"
 end_date = f"{year}-12-31"
 
-# ---- Download ERA5 data (fixed recommended variables, no separate UI multiselect) ----
+# ---- Recommended ERA5 variables (fixed set, no UI multiselect) ----
+default_hourly = [
+    "temperature_2m",
+    "precipitation",
+    "wind_speed_10m",
+    "relative_humidity_2m",
+    "surface_pressure",
+    "cloud_cover",
+]
+
 @st.cache_data(show_spinner=True)
 def _load_met(pa: str, sd: str, ed: str) -> pd.DataFrame:
-    """
-    Cached download of ERA5 data from Open-Meteo for a given price area and year.
-    We rely on the default/recommended hourly variables in download_open_meteo.
-    """
-    return download_open_meteo(price_area=pa, start_date=sd, end_date=ed)
+    """Download one year of hourly ERA5 (Open-Meteo) data for a price area."""
+    return download_open_meteo(
+        price_area=pa,
+        start_date=sd,
+        end_date=ed,
+        hourly=tuple(default_hourly),
+    )
 
 df = _load_met(pa, start_date, end_date)
 if df.empty:
@@ -58,6 +69,7 @@ def _clamp(v: int, lo: int, hi: int) -> int:
     return int(max(lo, min(hi, v)))
 
 
+# ---- Cached STL computation ----
 @st.cache_data(show_spinner=False)
 def compute_stl(
     df: pd.DataFrame,
@@ -67,10 +79,7 @@ def compute_stl(
     trend: int,
     robust: bool,
 ):
-    """
-    Cached STL decomposition so that we do not recompute when only
-    spectrogram parameters or other controls change.
-    """
+    """Compute STL decomposition for a given series and parameter set."""
     # Build hourly time series without NaN
     ts = pd.Series(
         pd.to_numeric(df[target], errors="coerce").values,
@@ -84,22 +93,21 @@ def compute_stl(
     seasonal = _to_odd(max(7, int(seasonal)))
     trend = _to_odd(max(3, int(trend)))
 
-    # STL dislikes series too short relative to periods/windows
-    # 1) ensure we have at least 2*period observations (otherwise lower period)
+    # Ensure we have enough observations for the chosen period
     if nobs < 2 * period:
         period = max(2, nobs // 2)
 
-    # 2) windows cannot be >= nobs
+    # Windows cannot be >= nobs
     seasonal = _clamp(seasonal, 7, max(7, nobs - 1))
     seasonal = _to_odd(seasonal)
     trend = _clamp(trend, 3, max(3, nobs - 1))
     trend = _to_odd(trend)
 
-    # 3) trend should be > period (otherwise increase)
+    # Trend should be > period
     if trend <= period:
         trend = _to_odd(period + 1)
 
-    # 4) extra safety: if still very large windows, scale down proportionally
+    # Extra safety: scale down very large windows
     if seasonal >= nobs:
         seasonal = _to_odd(max(7, nobs // 5 * 2 + 1))
     if trend >= nobs:
@@ -107,7 +115,7 @@ def compute_stl(
     if trend <= period:
         trend = _to_odd(period + 1)
 
-    # 5) final fallback if init still fails
+    # Final fallback if init still fails
     try:
         stl = STL(
             ts,
@@ -129,11 +137,10 @@ def compute_stl(
 
     res = stl.fit()
     x_index = res.observed.index
-
-    # Return components as simple Series to keep the cache payload clean
     return x_index, res.observed, res.trend, res.seasonal, res.resid
 
 
+# ---- Cached spectrogram computation ----
 @st.cache_data(show_spinner=False)
 def compute_spectrogram(
     df: pd.DataFrame,
@@ -141,10 +148,7 @@ def compute_spectrogram(
     window_length: int,
     overlap: int,
 ):
-    """
-    Cached spectrogram computation so that we do not recompute when only
-    STL parameters or other controls change.
-    """
+    """Compute spectrogram for a given series and window/overlap."""
     sig = pd.Series(
         pd.to_numeric(df[target], errors="coerce").values,
         index=pd.to_datetime(df["time"]),
@@ -160,7 +164,6 @@ def compute_spectrogram(
         mode="magnitude",
     )
     Sxx_log = 10 * np.log10(Sxx + 1e-12)
-
     return f, t, Sxx_log
 
 
