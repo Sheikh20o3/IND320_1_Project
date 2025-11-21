@@ -53,7 +53,7 @@ PRODUCTION_CSV_2021 = ASS4_DIR / "elhub_production_2021_all_areas.csv"
 PRODUCTION_CSV_2022_2024 = ASS4_DIR / "elhub_production_2022_2024_all_areas.csv"
 
 # Vi begrenser treningsdatasettet for å holde SARIMAX kjapp
-MAX_TRAIN_POINTS = 2000  # ~ 83 dager med timesdata
+MAX_TRAIN_POINTS = 1500  # ~ 62 dager med timesdata
 
 
 # ---------------- Time handling helpers ---------------- #
@@ -64,9 +64,7 @@ def _to_naive_oslo(series: pd.Series) -> pd.Series:
     timestamps in Europe/Oslo.
     Works for both tz-aware and tz-naive input.
     """
-    # Alltid parse som UTC først for å unngå blandet tz
     dt_utc = pd.to_datetime(series, errors="coerce", utc=True)
-    # Konverter til Europe/Oslo og dropp timezone-info (tz-naive)
     dt_local = dt_utc.dt.tz_convert("Europe/Oslo").dt.tz_localize(None)
     return dt_local
 
@@ -111,7 +109,6 @@ def fetch_era5_hourly(lat: float, lon: float, year: int) -> pd.DataFrame:
     hourly = data["hourly"]
     df = pd.DataFrame(hourly)
 
-    # Parse time og dropp timezone så det matcher Elhub (tz-naive)
     df["time"] = pd.to_datetime(df["time"])
     if getattr(df["time"].dt, "tz", None) is not None:
         df["time"] = df["time"].dt.tz_convert("Europe/Oslo").dt.tz_localize(None)
@@ -138,6 +135,9 @@ def _load_energy_csv_generic(
     - Filters on price area and year.
     - Converts timestamps to tz-naive Europe/Oslo.
     - Aggregates to one row per hour: 'time', 'energy_kwh'.
+
+    Note: Series used for SARIMAX is the TOTAL hourly kWh for the given
+    price area and year, aggregated over all groups present in the CSV.
     """
     frames = []
 
@@ -178,7 +178,7 @@ def _load_energy_csv_generic(
 
     out = pd.concat(frames, ignore_index=True)
 
-    # Aggreger til én rad per time
+    # Aggreger til én rad per time (summert over grupper)
     out = (
         out.groupby("time", as_index=False)["energy_kwh"]
         .sum()
@@ -295,9 +295,7 @@ def prepare_endog_and_exog(
     df_energy = df_energy.sort_values("time")
     df_energy = df_energy.set_index("time")
 
-    # Sikre timesfrekvens
     y_all = df_energy["energy_kwh"].asfreq("H")
-    # Fyll hull for å unngå SARIMAX-trøbbel
     y_all = y_all.interpolate(limit_direction="both")
 
     # Treningsperiode (inklusiv)
@@ -323,10 +321,8 @@ def prepare_endog_and_exog(
         df_met["time"] = pd.to_datetime(df_met["time"])
         df_met = df_met.set_index("time").sort_index()
 
-        # Bare valgte exogene variabler
         df_met = df_met[exog_keys]
 
-        # Reindekser til å matche energy-indeks + forecast-indeks
         exog_all = df_met.reindex(y_all.index.union(forecast_index))
         exog_all = exog_all.interpolate(limit_direction="both")
 
@@ -350,22 +346,52 @@ def run_sarimax(
     order=(1, 1, 1),
     seasonal_order=(1, 1, 1, 24),
 ):
-    """Fit SARIMAX and return (results, forecast_mean, lower_ci, upper_ci)."""
-    model = SARIMAX(
-        y_train,
-        exog=exog_train,
-        order=order,
-        seasonal_order=seasonal_order,
-        enforce_stationarity=False,
-        enforce_invertibility=False,
-        simple_differencing=True,  # litt raskere og mer stabilt
-    )
+    """
+    Fit SARIMAX and return (results, forecast_mean, lower_ci, upper_ci).
 
-    results = model.fit(
-        method="lbfgs",
-        maxiter=50,
-        disp=False,
-    )
+    Robust oppsett:
+    - trend='c' for å ha intercept (unngå at serien kollapser mot 0).
+    - ingen simple_differencing (statsmodels håndterer differensiering).
+    - fallback til enklere ikke-sesongmodell hvis første forsøk feiler.
+    """
+    try:
+        model = SARIMAX(
+            y_train,
+            exog=exog_train,
+            order=order,
+            seasonal_order=seasonal_order,
+            trend="c",
+            enforce_stationarity=False,
+            enforce_invertibility=False,
+        )
+
+        results = model.fit(
+            method="lbfgs",
+            maxiter=150,
+            disp=False,
+        )
+
+    except Exception as e:
+        st.warning(
+            f"Initial SARIMAX configuration failed ({e}). "
+            "Falling back to a simpler non-seasonal ARIMA(1,1,1) with intercept."
+        )
+
+        model = SARIMAX(
+            y_train,
+            exog=exog_train,
+            order=(1, 1, 1),
+            seasonal_order=(0, 0, 0, 0),
+            trend="c",
+            enforce_stationarity=False,
+            enforce_invertibility=False,
+        )
+
+        results = model.fit(
+            method="lbfgs",
+            maxiter=150,
+            disp=False,
+        )
 
     if exog_forecast is not None:
         forecast_res = results.get_forecast(steps=forecast_steps, exog=exog_forecast)
@@ -374,7 +400,6 @@ def run_sarimax(
 
     forecast_mean = forecast_res.predicted_mean
     ci = forecast_res.conf_int()
-    # Statsmodels gir typisk 'lower energy_kwh', 'upper energy_kwh'
     lower_ci = ci.iloc[:, 0]
     upper_ci = ci.iloc[:, 1]
 
@@ -383,7 +408,6 @@ def run_sarimax(
 
 # ---------------- UI Controls ---------------- #
 
-# Price area selection
 default_areas = ["NO1", "NO2", "NO3", "NO4", "NO5"]
 try:
     areas_from_db = list_price_areas()
@@ -415,8 +439,8 @@ with col_top3:
     )
 
 st.markdown(
-    f"*Merk: treningsdatasettet begrenses automatisk til de siste "
-    f"{MAX_TRAIN_POINTS} timene i valgt treningsperiode for å holde modellen rask.*"
+    f"*Note: The training dataset is automatically limited to the last "
+    f"{MAX_TRAIN_POINTS} hours in the chosen training period to keep the model responsive.*"
 )
 st.markdown("---")
 
@@ -488,15 +512,18 @@ if df_energy.empty:
     )
     st.stop()
 
-# Oppdater treningsgrenser basert på data
+st.info(
+    f"Modelling hourly **{dataset.lower()} energy (kWh)** for "
+    f"**price area {price_area}** in **{year}**, aggregated over all "
+    "production/consumption groups present in the CSV data."
+)
+
 min_time = pd.to_datetime(df_energy["time"]).min()
 max_time = pd.to_datetime(df_energy["time"]).max()
 
-# Datoer fra UI -> timestamps
 train_start = pd.Timestamp.combine(train_start_date, dt.time(0, 0))
 train_end = pd.Timestamp.combine(train_end_date, dt.time(23, 0))
 
-# Klipp innenfor tilgjengelig data
 if train_start < min_time:
     train_start = min_time
 if train_end > max_time:
@@ -505,22 +532,21 @@ if train_end <= train_start:
     st.error("Training end must be after training start.")
     st.stop()
 
-# Sjekk at forecast passer inni tilgjengelig data
 forecast_start = train_end + pd.Timedelta(hours=1)
 max_forecast_end = max_time
 
 available_hours = int((max_forecast_end - forecast_start) / pd.Timedelta(hours=1)) + 1
 if available_hours <= 0:
     st.error(
-        "Ingen data tilgjengelig etter treningsperioden i valgt år – "
-        "kan ikke lage forecast-horisont. Prøv å avslutte treningen tidligere."
+        "No data available after the training period in the selected year – "
+        "cannot define a forecast horizon. Try ending the training period earlier."
     )
     st.stop()
 
 if forecast_hours > available_hours:
     st.warning(
-        f"Ønsket forecast-horisont på {forecast_hours} timer er større enn "
-        f"tilgjengelig data ({available_hours} timer). Bruker {available_hours} timer i stedet."
+        f"Requested forecast horizon of {forecast_hours} hours exceeds available "
+        f"data ({available_hours} hours). Using {available_hours} hours instead."
     )
     forecast_hours = available_hours
 
@@ -529,7 +555,7 @@ if forecast_hours > available_hours:
 df_met = None
 if exog_keys:
     if price_area not in PRICEAREA_COORDS:
-        st.error(f"Ingen koordinater definert for prisområde {price_area}. Kan ikke hente ERA5.")
+        st.error(f"No coordinates defined for price area {price_area}. Cannot fetch ERA5.")
         st.stop()
 
     lat, lon = PRICEAREA_COORDS[price_area]
@@ -574,10 +600,10 @@ if run_button:
         st.error(f"Failed to fit SARIMAX model or produce forecast: {e}")
         st.stop()
 
-    # Bygg figur
+    # ---------------- Plot results ---------------- #
+
     st.subheader("Forecast results")
 
-    # Faktiske data for forecast-horisonten (for sammenligning)
     df_energy_idx = df_energy.copy()
     df_energy_idx["time"] = pd.to_datetime(df_energy_idx["time"])
     df_energy_idx = df_energy_idx.set_index("time").sort_index()
@@ -589,7 +615,7 @@ if run_button:
 
     fig = go.Figure()
 
-    # Treningsdata
+    # Training data
     fig.add_trace(
         go.Scatter(
             x=y_train_full.index,
@@ -599,7 +625,7 @@ if run_button:
         )
     )
 
-    # Faktiske fremtidige verdier (hvis de finnes)
+    # Actual future values (if present)
     if not y_actual_future.isna().all():
         fig.add_trace(
             go.Scatter(
@@ -620,7 +646,7 @@ if run_button:
         )
     )
 
-    # Konfidensintervall
+    # Confidence intervals
     fig.add_trace(
         go.Scatter(
             x=forecast_index,
@@ -662,5 +688,3 @@ if run_button:
             }
         )
         st.dataframe(df_out.head(), use_container_width=True)
-
-    
