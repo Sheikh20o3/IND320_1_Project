@@ -38,10 +38,14 @@ if df.empty:
 df["time"] = pd.to_datetime(df["time"], errors="coerce")
 df = df.dropna(subset=["time"]).copy()
 
-# Slider for valg av tidsperiode (det læreren savner)
-min_time = df["time"].min()
-max_time = df["time"].max()
+# 🔧 VIKTIG: konverter til ekte Python-datetime
+min_time_ts = df["time"].min()
+max_time_ts = df["time"].max()
 
+min_time = min_time_ts.to_pydatetime()
+max_time = max_time_ts.to_pydatetime()
+
+# Slider for valg av tidsperiode
 start_time, end_time = st.slider(
     "Select time window",
     min_value=min_time,
