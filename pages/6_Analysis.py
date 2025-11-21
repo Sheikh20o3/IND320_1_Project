@@ -149,7 +149,7 @@ with tab_outlier:
             y=ts_temp.values[outlier_mask],
             mode="markers",
             name="Outliers",
-            marker=dict(size=6),
+            marker=dict(size=6, color="red", symbol="x"),
         )
     )
 
@@ -195,24 +195,40 @@ with tab_lof:
             0.005,
         )  # default 1%
 
+    # --- LOF only on strictly positive precipitation to avoid 0-valued "anomalies" ---
+    values = ts_prec.values
+    mask_positive = values > 0.0  # ignore dry hours for anomaly detection
+
+    if mask_positive.sum() < n_neighbors + 1:
+        st.warning(
+            "Not enough non-zero precipitation values for LOF with the current "
+            "n_neighbors setting. Try a different year or reduce n_neighbors."
+        )
+        st.stop()
+
     # Simple 2D features: value + rolling mean (provides local context to LOF)
-    X = pd.DataFrame(
+    full_features = pd.DataFrame(
         {
-            "val": ts_prec.values,
-            "roll": pd.Series(ts_prec.values)
-            .rolling(24, min_periods=1)
-            .mean()
-            .values,
+            "val": values,
+            "roll": pd.Series(values).rolling(24, min_periods=1).mean().values,
         }
-    ).values
+    )
+
+    X = full_features[mask_positive].values
 
     lof = LocalOutlierFactor(
         n_neighbors=n_neighbors,
         contamination=contamination,
     )
     y_pred = lof.fit_predict(X)  # -1 = outlier
-    scores = -lof.negative_outlier_factor_
-    is_out = y_pred == -1
+    scores_valid = -lof.negative_outlier_factor_
+
+    # Map back to full time index: only positive-precip hours can be anomalies
+    is_out = np.zeros(len(values), dtype=bool)
+    is_out[mask_positive] = (y_pred == -1)
+
+    scores = np.full(len(values), np.nan, dtype=float)
+    scores[mask_positive] = scores_valid
 
     # --- Plot with Plotly: precipitation + LOF anomalies ---
     fig_lof = go.Figure()
@@ -231,7 +247,12 @@ with tab_lof:
             y=ts_prec.values[is_out],
             mode="markers",
             name="LOF anomalies",
-            marker=dict(size=6),
+            marker=dict(
+                size=7,
+                color="red",      # high contrast
+                symbol="x",       # clearly different from line
+                line=dict(width=1),
+            ),
         )
     )
 
@@ -245,12 +266,21 @@ with tab_lof:
 
     st.plotly_chart(fig_lof, use_container_width=True)
 
+    # Summary only over non-NaN scores (i.e., non-zero precipitation)
+    valid_scores = scores[~np.isnan(scores)]
+
     st.write(
         {
             "total_points": int(len(ts_prec)),
+            "nonzero_points": int(mask_positive.sum()),
             "anomalies": int(is_out.sum()),
-            "anomaly_fraction": float(is_out.mean()),
-            "score_p95": float(np.percentile(scores, 95)),
-            "score_p99": float(np.percentile(scores, 99)),
+            "anomaly_fraction_over_nonzero": float(is_out[mask_positive].mean()),
+            "score_p95": float(np.percentile(valid_scores, 95)),
+            "score_p99": float(np.percentile(valid_scores, 99)),
         }
+    )
+
+    st.caption(
+        "Note: LOF is applied only to hours with positive precipitation, "
+        "to avoid flagging dry periods (0 mm) as anomalies."
     )
