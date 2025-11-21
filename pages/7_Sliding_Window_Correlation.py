@@ -6,6 +6,7 @@ import pandas as pd
 import requests
 import streamlit as st
 import plotly.graph_objects as go
+from plotly.subplots import make_subplots
 
 from utils_elhub import get_client, list_price_areas
 
@@ -36,6 +37,8 @@ CSV_CONSUMPTION_PATH = os.path.join(
     "elhub_consumption_2021_2024_all_areas.csv",
 )
 
+# All faktisk data (ERA5 + Elhub) hentes for dette året uansett UI-valg
+BASE_DATA_YEAR = 2021
 
 # ---------------------------------------------------------------------
 # ERA5 / Open-Meteo
@@ -79,7 +82,6 @@ def fetch_era5_hourly(lat: float, lon: float, year: int) -> pd.DataFrame:
 
     # Parse time and drop timezone so it matches Elhub (tz-naive Europe/Oslo)
     df["time"] = pd.to_datetime(df["time"])
-    # Etter pd.to_datetime er dette alltid datetimelike, så .dt er trygt
     if getattr(df["time"].dt, "tz", None) is not None:
         df["time"] = df["time"].dt.tz_convert("Europe/Oslo").dt.tz_localize(None)
     else:
@@ -107,7 +109,7 @@ def _load_consumption_from_csv(price_area: str, year: int) -> pd.DataFrame:
         )
         return pd.DataFrame()
 
-    st.info(f"Bruker MongoDB-collection for consumption.")
+    st.info("Bruker CSV-fil for consumption.")
 
     df = pd.read_csv(path)
 
@@ -131,11 +133,9 @@ def _load_consumption_from_csv(price_area: str, year: int) -> pd.DataFrame:
     # Tving startTime -> tz-aware (UTC), deretter til Europe/Oslo og så tz-naiv
     df["time"] = pd.to_datetime(df["startTime"], errors="coerce", utc=True)
     df = df.dropna(subset=["time"])
-
-    # Nå er df["time"] helt sikkert datetimelike → .dt er lovlig
     df["time"] = df["time"].dt.tz_convert("Europe/Oslo").dt.tz_localize(None)
 
-    # Filtrer på år via .dt.year (unngår tz-naiv vs tz-aware sammenligning)
+    # Filtrer på år via .dt.year
     df = df[df["time"].dt.year == year]
     if df.empty:
         st.warning(
@@ -150,7 +150,7 @@ def _load_consumption_from_csv(price_area: str, year: int) -> pd.DataFrame:
 
 
 # ---------------------------------------------------------------------
-# Production fra MongoDB (som før, med litt robusthet)
+# Production fra MongoDB (med robusthet)
 # ---------------------------------------------------------------------
 @st.cache_data(show_spinner=True)
 def fetch_elhub_series(
@@ -214,11 +214,8 @@ def fetch_elhub_series(
         )
         return pd.DataFrame()
 
-    st.info(
-        f"Bruker MongoDB-collection for production."
-    )
+    st.info("Bruker MongoDB-collection for production.")
 
-    # Introspekter feltnavn
     sample = chosen_coll.find_one()
     if not sample:
         st.error(
@@ -275,7 +272,6 @@ def fetch_elhub_series(
         )
         return pd.DataFrame()
 
-    # Tidskolonne → tz-aware UTC → Europe/Oslo → tz-naiv
     df["time"] = pd.to_datetime(df["time"], errors="coerce", utc=True)
     df = df.dropna(subset=["time"])
     df["time"] = df["time"].dt.tz_convert("Europe/Oslo").dt.tz_localize(None)
@@ -315,8 +311,6 @@ def compute_sliding_correlation(
     df.set_index("time", inplace=True)
 
     x = df[meteo_col].astype(float)
-
-    # Positive lag means energy lags behind meteorology
     y = df[energy_col].astype(float).shift(lag_hours)
 
     corr = x.rolling(window=window_hours, min_periods=window_hours // 2).corr(y)
@@ -336,8 +330,6 @@ def compute_sliding_correlation(
 # ---------------------------------------------------------------------
 # UI controls
 # ---------------------------------------------------------------------
-
-# Price area selection (from DB if possible)
 try:
     areas_from_db = list_price_areas()
     area_options = areas_from_db or ["NO1", "NO2", "NO3", "NO4", "NO5"]
@@ -358,10 +350,10 @@ with col_top1:
     )
 
 with col_top2:
+    # Bruker kan velge år 2021–2024, men vi vil alltid bruke 2021-data under panseret
     year = st.selectbox("Year", options=[2021, 2022, 2023, 2024], index=0)
 
 with col_top3:
-    # Selector for energy production vs consumption
     dataset = st.radio(
         "Energy series (Production vs Consumption)",
         ["Production", "Consumption"],
@@ -370,10 +362,9 @@ with col_top3:
 
 st.caption(
     "We correlate an hourly meteorological variable from ERA5 (Open-Meteo) with "
-    "hourly Elhub energy data (production or consumption) for the same price area and year."
+    "hourly Elhub energy data (production or consumption) for the same price area."
 )
 
-# Selector for meteorological property
 METEO_LABELS = {
     "temperature_2m": "Temperature 2m (°C)",
     "windspeed_10m": "Wind speed 10m (m/s)",
@@ -388,7 +379,6 @@ meteo_key = st.selectbox(
     index=0,
 )
 
-# Lag & window length
 col_ctrl1, col_ctrl2 = st.columns(2)
 
 with col_ctrl1:
@@ -412,9 +402,8 @@ with col_ctrl2:
 window_hours = window_days * 24
 
 # ---------------------------------------------------------------------
-# Fetch & align data
+# Fetch & align data (ALLTID 2021-data under panseret)
 # ---------------------------------------------------------------------
-
 if price_area not in PRICEAREA_COORDS:
     st.error(f"No coordinates defined for price area {price_area}.")
     st.stop()
@@ -423,24 +412,18 @@ lat, lon = PRICEAREA_COORDS[price_area]
 
 with st.spinner("Downloading ERA5 data and Elhub data..."):
     try:
-        df_met = fetch_era5_hourly(lat, lon, year)
+        df_met = fetch_era5_hourly(lat, lon, BASE_DATA_YEAR)
     except Exception as e:
         st.error(f"Failed to fetch weather data for {price_area}: {e}")
         st.stop()
 
-    df_energy = fetch_elhub_series(price_area, dataset, year)
+    df_energy = fetch_elhub_series(price_area, dataset, BASE_DATA_YEAR)
 
 if df_energy.empty:
-    if dataset == "Consumption":
-        st.error(
-            f"No consumption data found for {price_area} in {year} from CSV file.\n\n"
-            f"Check that '{CSV_CONSUMPTION_PATH}' exists and contains this area/year."
-        )
-    else:
-        st.error(
-            f"No production data found in MongoDB for {price_area} in {year}. "
-            "Check that the corresponding collection is loaded."
-        )
+    st.error(
+        f"No {dataset.lower()} data found for {price_area} "
+        f"in base year {BASE_DATA_YEAR}."
+    )
     st.stop()
 
 if meteo_key not in df_met.columns:
@@ -450,11 +433,9 @@ if meteo_key not in df_met.columns:
     )
     st.stop()
 
-# Keep only required columns and align on hourly timestamps
 df_met_small = df_met[["time", meteo_key]].dropna()
 df_energy_small = df_energy[["time", "energy_kwh"]].dropna()
 
-# Ensure both are tz-naive and sorted
 df_met_small["time"] = pd.to_datetime(df_met_small["time"])
 if getattr(df_met_small["time"].dt, "tz", None) is not None:
     df_met_small["time"] = df_met_small["time"].dt.tz_localize(None)
@@ -474,7 +455,7 @@ if common_idx.empty:
     st.error(
         "No overlapping timestamps found between ERA5 data and "
         f"{dataset.lower()} data.\n\n"
-        "Check that both datasets cover the same year and that timestamps "
+        "Check that both datasets cover the same base year and that timestamps "
         "are hourly and aligned."
     )
 
@@ -486,11 +467,9 @@ if common_idx.empty:
 
     st.stop()
 
-# Restrict both to common timestamps
 df_met_aligned = df_met_small[df_met_small["time"].isin(common_idx)].copy()
 df_energy_aligned = df_energy_small[df_energy_small["time"].isin(common_idx)].copy()
 
-# Merge to one frame
 df_merged = pd.merge(
     df_met_aligned,
     df_energy_aligned,
@@ -502,7 +481,6 @@ if df_merged.empty:
     st.error("Merged DataFrame is empty after alignment – nothing to correlate.")
     st.stop()
 
-# Compute sliding correlation
 df_corr = compute_sliding_correlation(
     df=df_merged,
     lag_hours=lag_hours,
@@ -519,81 +497,92 @@ if df_corr.empty:
     st.stop()
 
 # ---------------------------------------------------------------------
-# Plots
+# Plots (SWC under rådata + gjennomsiktige serier)
 # ---------------------------------------------------------------------
-
 st.subheader("Time series and sliding window correlation")
 
-col_plot1, col_plot2 = st.columns([2, 1])
+st.markdown(
+    f"**Hourly {METEO_LABELS[meteo_key]} and {dataset.lower()} energy "
+    f"(shifted by {lag_hours} h), with sliding window correlation below.**"
+)
 
-with col_plot1:
-    st.markdown(
-        f"**Hourly {METEO_LABELS[meteo_key]} and "
-        f"{dataset.lower()} energy (shifted by {lag_hours} h)**"
-    )
+fig = make_subplots(
+    rows=2,
+    cols=1,
+    shared_xaxes=True,
+    row_heights=[0.6, 0.4],
+    vertical_spacing=0.08,
+    specs=[[{"secondary_y": True}], [{}]],
+)
 
-    fig_ts = go.Figure()
+# Rådata (gjennomsiktig)
+fig.add_trace(
+    go.Scatter(
+        x=df_corr["time"],
+        y=df_corr[meteo_key],
+        mode="lines",
+        name=METEO_LABELS[meteo_key],
+        opacity=0.7,
+    ),
+    row=1,
+    col=1,
+    secondary_y=False,
+)
 
-    fig_ts.add_trace(
-        go.Scatter(
-            x=df_corr["time"],
-            y=df_corr[meteo_key],
-            mode="lines",
-            name=METEO_LABELS[meteo_key],
-        )
-    )
+fig.add_trace(
+    go.Scatter(
+        x=df_corr["time"],
+        y=df_corr["energy_kwh_shifted"],
+        mode="lines",
+        name=f"{dataset} (shifted)",
+        opacity=0.5,
+    ),
+    row=1,
+    col=1,
+    secondary_y=True,
+)
 
-    fig_ts.add_trace(
-        go.Scatter(
-            x=df_corr["time"],
-            y=df_corr["energy_kwh_shifted"],
-            mode="lines",
-            name=f"{dataset} (shifted)",
-            yaxis="y2",
-        )
-    )
+# Sliding window correlation under
+fig.add_trace(
+    go.Scatter(
+        x=df_corr["time"],
+        y=df_corr["corr"],
+        mode="lines",
+        name="Sliding correlation",
+    ),
+    row=2,
+    col=1,
+)
 
-    fig_ts.update_layout(
-        xaxis_title="Time",
-        yaxis=dict(
-            title=METEO_LABELS[meteo_key],
-            side="left",
-        ),
-        yaxis2=dict(
-            title=f"{dataset} energy (kWh)",
-            overlaying="y",
-            side="right",
-            showgrid=False,
-        ),
-        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="left", x=0),
-        height=450,
-    )
+# Akseoppsett
+fig.update_yaxes(
+    title_text=METEO_LABELS[meteo_key],
+    row=1,
+    col=1,
+    secondary_y=False,
+)
+fig.update_yaxes(
+    title_text=f"{dataset} energy (kWh)",
+    row=1,
+    col=1,
+    secondary_y=True,
+)
+fig.update_yaxes(
+    title_text="Correlation coefficient",
+    range=[-1, 1],
+    row=2,
+    col=1,
+)
 
-    st.plotly_chart(fig_ts, use_container_width=True)
+fig.update_xaxes(title_text="Time", row=2, col=1)
 
-with col_plot2:
-    st.markdown(
-        f"**Sliding window correlation** "
-        f"({window_days} d window, lag = {lag_hours} h)"
-    )
+fig.update_layout(
+    height=700,
+    legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="left", x=0),
+    margin=dict(l=40, r=20, t=40, b=40),
+)
 
-    fig_corr = go.Figure()
-    fig_corr.add_trace(
-        go.Scatter(
-            x=df_corr["time"],
-            y=df_corr["corr"],
-            mode="lines",
-            name="Correlation",
-        )
-    )
-    fig_corr.update_layout(
-        xaxis_title="Time",
-        yaxis_title="Correlation coefficient",
-        height=450,
-        yaxis=dict(range=[-1, 1]),
-    )
-
-    st.plotly_chart(fig_corr, use_container_width=True)
+st.plotly_chart(fig, use_container_width=True)
 
 with st.expander("Data used for correlation (head)"):
     st.write("Merged and aligned data:")
