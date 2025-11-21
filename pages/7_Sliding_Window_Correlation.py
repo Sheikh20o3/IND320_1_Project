@@ -90,9 +90,6 @@ def fetch_era5_hourly(lat: float, lon: float, year: int) -> pd.DataFrame:
     return df
 
 
-# ---------------------------------------------------------------------
-# Consumption fra CSV (ALLTID fra CSV)
-# ---------------------------------------------------------------------
 def _load_consumption_from_csv(price_area: str, year: int) -> pd.DataFrame:
     """
     Les hourly consumption fra CSV-filen
@@ -103,9 +100,9 @@ def _load_consumption_from_csv(price_area: str, year: int) -> pd.DataFrame:
 
     if not os.path.exists(path):
         st.error(
-            "Consumption-CSV-fil ikke funnet.\n\n"
-            f"Forventet sti: '{path}'.\n"
-            "Sjekk at filen er med i repoet og at mappenavnet/filnavnet stemmer."
+            "\n\n"
+            f" '{path}'.\n"
+            ""
         )
         return pd.DataFrame()
 
@@ -116,9 +113,9 @@ def _load_consumption_from_csv(price_area: str, year: int) -> pd.DataFrame:
     required_cols = {"priceArea", "startTime", "quantityKwh"}
     if not required_cols.issubset(df.columns):
         st.error(
-            "Consumption-CSV har ikke forventede kolonner.\n\n"
-            f"Forventet minst: {required_cols}\n"
-            f"Fikk: {list(df.columns)}"
+            "\n\n"
+            f"{required_cols}\n"
+            f"{list(df.columns)}"
         )
         return pd.DataFrame()
 
@@ -126,7 +123,7 @@ def _load_consumption_from_csv(price_area: str, year: int) -> pd.DataFrame:
     df = df[df["priceArea"] == price_area].copy()
     if df.empty:
         st.warning(
-            f"Ingen consumption-rader for priceArea={price_area} i CSV-filen."
+            f"{price_area}."
         )
         return pd.DataFrame()
 
