@@ -53,7 +53,7 @@ PRODUCTION_CSV_2021 = ASS4_DIR / "elhub_production_2021_all_areas.csv"
 PRODUCTION_CSV_2022_2024 = ASS4_DIR / "elhub_production_2022_2024_all_areas.csv"
 
 # Limit training data so SARIMAX stays reasonably fast
-MAX_TRAIN_POINTS = 1500  # ~ 62 days of hourly data
+MAX_TRAIN_POINTS = 720  # ~ 62 days of hourly data
 
 
 # ---------------- Time handling helpers ---------------- #
@@ -351,11 +351,11 @@ def run_sarimax(
     """
     Fit SARIMAX and return (results, forecast_mean, lower_ci, upper_ci).
 
-    Robust setup:
-    - trend='c' to keep a non-zero level.
-    - no simple_differencing (let statsmodels handle differencing).
-    - fallback to simpler non-seasonal ARIMA(1,1,1) with intercept if the
-      chosen specification fails.
+    Robust oppsett:
+    - trend='c' for å ha intercept (unngå at serien kollapser mot 0).
+    - concentrate_scale=True for raskere estimering.
+    - lavere maxiter for å unngå at modellen står og kverner i evigheter.
+    - fallback til enklere ikke-sesongmodell hvis første forsøk feiler.
     """
     try:
         model = SARIMAX(
@@ -366,11 +366,12 @@ def run_sarimax(
             trend="c",
             enforce_stationarity=False,
             enforce_invertibility=False,
+            concentrate_scale=True,
         )
 
         results = model.fit(
             method="lbfgs",
-            maxiter=150,
+            maxiter=60,   # lavere enn 150
             disp=False,
         )
 
@@ -388,11 +389,12 @@ def run_sarimax(
             trend="c",
             enforce_stationarity=False,
             enforce_invertibility=False,
+            concentrate_scale=True,
         )
 
         results = model.fit(
             method="lbfgs",
-            maxiter=150,
+            maxiter=60,   # samme her
             disp=False,
         )
 
@@ -407,6 +409,7 @@ def run_sarimax(
     upper_ci = ci.iloc[:, 1]
 
     return results, forecast_mean, lower_ci, upper_ci
+
 
 
 # ---------------- UI Controls ---------------- #
