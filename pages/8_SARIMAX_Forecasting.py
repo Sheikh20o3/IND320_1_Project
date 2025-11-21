@@ -305,7 +305,7 @@ def prepare_endog_and_exog(
     if y_train.empty:
         raise ValueError("Treningsperioden er tom – juster datoene.")
 
-    # Forecast-horisont
+    # Forecast-horisont (kan ligge utenfor datasettet)
     forecast_start = train_end + pd.Timedelta(hours=1)
     forecast_index = pd.date_range(
         start=forecast_start,
@@ -323,8 +323,12 @@ def prepare_endog_and_exog(
 
         df_met = df_met[exog_keys]
 
+        # Reindekser til å matche både treningsdata og forecast-indeks
         exog_all = df_met.reindex(y_all.index.union(forecast_index))
+
+        # Interpoler og fyll evt. hull i starten/slutten
         exog_all = exog_all.interpolate(limit_direction="both")
+        exog_all = exog_all.ffill().bfill()
 
         exog_train = exog_all.loc[y_train.index]
         exog_forecast = exog_all.loc[forecast_index]
@@ -532,24 +536,6 @@ if train_end <= train_start:
     st.error("Training end must be after training start.")
     st.stop()
 
-forecast_start = train_end + pd.Timedelta(hours=1)
-max_forecast_end = max_time
-
-available_hours = int((max_forecast_end - forecast_start) / pd.Timedelta(hours=1)) + 1
-if available_hours <= 0:
-    st.error(
-        "No data available after the training period in the selected year – "
-        "cannot define a forecast horizon. Try ending the training period earlier."
-    )
-    st.stop()
-
-if forecast_hours > available_hours:
-    st.warning(
-        f"Requested forecast horizon of {forecast_hours} hours exceeds available "
-        f"data ({available_hours} hours). Using {available_hours} hours instead."
-    )
-    forecast_hours = available_hours
-
 # ---------------- Fetch meteorology if needed ---------------- #
 
 df_met = None
@@ -625,7 +611,7 @@ if run_button:
         )
     )
 
-    # Actual future values (if present)
+    # Actual future values (if present inside original data range)
     if not y_actual_future.isna().all():
         fig.add_trace(
             go.Scatter(

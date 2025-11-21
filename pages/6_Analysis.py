@@ -284,3 +284,5 @@ with tab_lof:
         "Note: LOF is applied only to hours with positive precipitation, "
         "to avoid flagging dry periods (0 mm) as anomalies."
     )
+
+
