@@ -28,7 +28,6 @@ PRICEAREA_COORDS = {
     "NO5": (60.39299, 5.32415),  # Bergen
 }
 
-# Prosjektrot og CSV-path for consumption
 HERE = os.path.dirname(__file__)
 PROJECT_ROOT = os.path.dirname(HERE)
 CSV_CONSUMPTION_PATH = os.path.join(
@@ -92,9 +91,6 @@ def fetch_era5_hourly(lat: float, lon: float, year: int) -> pd.DataFrame:
 
 def _load_consumption_from_csv(price_area: str, year: int) -> pd.DataFrame:
     """
-    Les hourly consumption fra CSV-filen
-    Ass4_Rapporter/elhub_consumption_2021_2024_all_areas.csv
-    og returner kun gitt prisområde + år.
     """
     path = CSV_CONSUMPTION_PATH
 
@@ -136,7 +132,7 @@ def _load_consumption_from_csv(price_area: str, year: int) -> pd.DataFrame:
     df = df[df["time"].dt.year == year]
     if df.empty:
         st.warning(
-            f"Ingen consumption-data i CSV for {price_area} i {year}."
+            f"{price_area} i {year}."
         )
         return pd.DataFrame()
 
@@ -145,10 +141,6 @@ def _load_consumption_from_csv(price_area: str, year: int) -> pd.DataFrame:
 
     return df[["time", "energy_kwh"]]
 
-
-# ---------------------------------------------------------------------
-# Production fra MongoDB (med robusthet)
-# ---------------------------------------------------------------------
 @st.cache_data(show_spinner=True)
 def fetch_elhub_series(
     price_area: str,
@@ -160,11 +152,10 @@ def fetch_elhub_series(
 
     dataset:
       - "Production": hentes fra MongoDB
-      - "Consumption": hentes KUN fra CSV-filen
+      - "Consumption": 
 
     Returnerer DataFrame med kolonner: time (tz-naiv Europe/Oslo), energy_kwh
     """
-    # Consumption: ALLTID CSV – ingen MongoDB
     if dataset == "Consumption":
         return _load_consumption_from_csv(price_area, year)
 
