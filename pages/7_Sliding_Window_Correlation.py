@@ -109,7 +109,7 @@ def _load_consumption_from_csv(price_area: str, year: int) -> pd.DataFrame:
         )
         return pd.DataFrame()
 
-    st.info("Bruker CSV-fil for consumption.")
+    st.info("")
 
     df = pd.read_csv(path)
 
