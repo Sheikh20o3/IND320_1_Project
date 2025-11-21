@@ -11,11 +11,9 @@ st.caption(
     "correlations and SARIMAX forecasting."
 )
 
-# Shows selected price area (chosen on the Elhub page)
 area = get_selected_price_area()
 st.info(f"Selected price area: {area}")
 
-# Quick preview of data
 df = load_data()
 st.subheader("Quick look at the data")
 st.dataframe(df.head(), use_container_width=True)
