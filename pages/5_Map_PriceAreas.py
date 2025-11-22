@@ -17,10 +17,11 @@ st.set_page_config(page_title="Map – Price Areas", page_icon="🗺️", layout
 st.title("Map and Energy Statistics – Norwegian Price Areas (NO1–NO5)")
 
 # ------------------------------------------------------------
-# 1. GeoJSON-path
+# 1. Paths (GeoJSON + Consumption CSV)
 # ------------------------------------------------------------
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 GEOJSON_PATH = PROJECT_ROOT / "file.geojson"
+CONSUMPTION_CSV_PATH = PROJECT_ROOT / "Ass4_Rapporter" / "elhub_consumption_2021_2024_all_areas.csv"
 
 if not GEOJSON_PATH.exists():
     st.error(f"GeoJSON file not found at `{GEOJSON_PATH}`.")
@@ -30,65 +31,28 @@ with GEOJSON_PATH.open("r", encoding="utf-8") as f:
     geojson_data = json.load(f)
 
 # ------------------------------------------------------------
-# 2. Mongo-hjelpere
+# 2. Datakilde-funksjon for Consumption (CSV)
 # ------------------------------------------------------------
 @st.cache_data(show_spinner=True)
-def get_mongo_collections() -> list[str]:
-    cli = get_client()
-    db = cli["elhub"]
-    return db.list_collection_names()
-
-
-@st.cache_data(show_spinner=True)
-def load_consumption_df() -> pd.DataFrame:
+def load_consumption_csv(path: str) -> pd.DataFrame:
     """
-    Load all consumption data from MongoDB into a pandas DataFrame.
-
-    Forventer at collection 'consumption_2021_2024_by_hour' ligger
-    i samme kluster som production (via get_client()).
+    Load consumption data from CSV and make startTime tz-naive datetime.
+    Forventer kolonner: priceArea, startTime, consumptionGroup, quantityKwh
     """
-    cli = get_client()
-    db = cli["elhub"]
-    collection_names = db.list_collection_names()
-
-    if "consumption_2021_2024_by_hour" in collection_names:
-        coll_name = "consumption_2021_2024_by_hour"
-    else:
-        candidates = [n for n in collection_names if n.startswith("consumption")]
-        if not candidates:
-            return pd.DataFrame(columns=["priceArea", "startTime", "consumptionGroup", "quantityKwh"])
-        coll_name = candidates[0]
-
-    coll = db[coll_name]
-
-    docs = list(
-        coll.find(
-            {},
-            {
-                "_id": 0,
-                "priceArea": 1,
-                "startTime": 1,
-                "consumptionGroup": 1,
-                "quantityKwh": 1,
-            },
-        )
-    )
-    if not docs:
-        return pd.DataFrame(columns=["priceArea", "startTime", "consumptionGroup", "quantityKwh"])
-
-    df = pd.DataFrame(docs)
-    df["startTime"] = pd.to_datetime(df["startTime"])
+    df = pd.read_csv(path)
+    # startTime kan ha tidssone → gjør til tz-aware, så gjør den tz-naive
+    df["startTime"] = pd.to_datetime(df["startTime"], utc=True, errors="coerce")
+    df["startTime"] = df["startTime"].dt.tz_convert(None)
     return df
 
 
-@st.cache_data(show_spinner=True)
-def list_consumption_groups() -> list[str]:
-    """Distinct consumptionGroup-verdier for consumption (fra Mongo)."""
-    df = load_consumption_df()
-    if df.empty:
-        return []
-    return sorted(df["consumptionGroup"].dropna().unique().tolist())
-
+# Prøv å laste CSV én gang (brukes både til UI og beregning).
+_consumption_df = None
+if CONSUMPTION_CSV_PATH.exists():
+    try:
+        _consumption_df = load_consumption_csv(str(CONSUMPTION_CSV_PATH))
+    except Exception:
+        _consumption_df = None
 
 # ------------------------------------------------------------
 # 3. UI-kontroller
@@ -119,9 +83,15 @@ with col2:
         except Exception:
             base_groups = []
     else:
-        try:
-            base_groups = list_consumption_groups()
-        except Exception:
+        # Consumption-grupper fra CSV
+        if _consumption_df is not None:
+            try:
+                base_groups = sorted(
+                    _consumption_df["consumptionGroup"].dropna().unique().tolist()
+                )
+            except Exception:
+                base_groups = []
+        else:
             base_groups = []
 
     group_options = ["All groups"] + base_groups
@@ -140,7 +110,9 @@ st.caption(
 )
 
 # ------------------------------------------------------------
-# 4. Hent gjennomsnitt per prisområde fra MongoDB
+# 4. Hent gjennomsnitt per prisområde
+#    - Production: MongoDB
+#    - Consumption: CSV
 # ------------------------------------------------------------
 @st.cache_data(show_spinner=True)
 def fetch_means(
@@ -148,28 +120,30 @@ def fetch_means(
     group: str,
     start_d: dt.date,
     end_d: dt.date,
+    consumption_path: str,
 ) -> pd.DataFrame:
     """
     Return mean quantity per price area.
 
-    - Production: aggregeres i Mongo (via get_client).
-    - Consumption: hentes som DataFrame (via get_client) og aggregeres i pandas.
+    - Production: from MongoDB
+    - Consumption: from CSV file elhub_consumption_2021_2024_all_areas.csv
     """
-    cli = get_client()
-    db = cli["elhub"]
-    collection_names = db.list_collection_names()
-
     # -------------------------
-    # Production → Mongo pipeline
+    # Production → MongoDB
     # -------------------------
     if mode == "Production":
+        cli = get_client()
+        db = cli["elhub"]
+
         group_field = "productionGroup"
+        collection_names = db.list_collection_names()
+
         if "production_2021_2024_by_hour" in collection_names:
             coll_name = "production_2021_2024_by_hour"
         elif "production_2021_hourly_by_group" in collection_names:
             coll_name = "production_2021_hourly_by_group"
         else:
-            candidates = [n for n in collection_names if n.startswith("production")]
+            candidates = [name for name in collection_names if name.startswith("production")]
             if not candidates:
                 return pd.DataFrame(columns=["priceArea", "meanValue"])
             coll_name = candidates[0]
@@ -198,11 +172,14 @@ def fetch_means(
         return pd.DataFrame(docs) if docs else pd.DataFrame(columns=["priceArea", "meanValue"])
 
     # -------------------------
-    # Consumption → pandas
+    # Consumption → CSV-fil
     # -------------------------
-    df = load_consumption_df()
-    if df.empty:
-        return pd.DataFrame(columns=["priceArea", "meanValue"])
+    if not Path(consumption_path).exists():
+        raise FileNotFoundError(
+            f"Consumption CSV file not found at:\n`{consumption_path}`"
+        )
+
+    df = load_consumption_csv(consumption_path)
 
     start_ts = pd.to_datetime(start_d)
     end_ts_excl = pd.to_datetime(end_d + dt.timedelta(days=1))
@@ -226,7 +203,10 @@ def fetch_means(
 
 
 try:
-    df_stats = fetch_means(mode, group, start_date, end_date)
+    df_stats = fetch_means(mode, group, start_date, end_date, str(CONSUMPTION_CSV_PATH))
+except FileNotFoundError as e:
+    st.error(str(e))
+    st.stop()
 except Exception as e:
     st.error(f"Could not fetch {mode.lower()} data: {e}")
     st.stop()
@@ -272,8 +252,7 @@ def style_function(feature):
     if val is None:
         fill_color, fill_opacity = "#cccccc", 0.2
     else:
-        vmin = min(value_map.values())
-        vmax = max(value_map.values())
+        vmin, vmax = min(value_map.values()), max(value_map.values())
         denom = (vmax - vmin) if vmax != vmin else 1.0
         norm = (val - vmin) / denom
         r = int(255 * norm)
@@ -385,18 +364,19 @@ with st.expander("Details and debug info"):
     st.write("Mean values per price area:")
     st.dataframe(df_stats, use_container_width=True)
     st.write(f"GeoJSON path: `{GEOJSON_PATH}`")
-    st.write("Mongo collections in 'elhub':")
-    try:
-        st.write(get_mongo_collections())
-    except Exception as e:
-        st.write(f"(could not list collections: {e})")
-    try:
-        cdf = load_consumption_df()
-        if not cdf.empty:
-            st.write("Consumption DF shape:", cdf.shape)
-            st.write("Consumption date range:", cdf["startTime"].min(), "→", cdf["startTime"].max())
-            st.write("Consumption groups (first 10):", sorted(cdf["consumptionGroup"].dropna().unique().tolist())[:10])
-    except Exception as e:
-        st.write(f"Error loading consumption DF: {e}")
+    st.write(f"Consumption CSV path: `{CONSUMPTION_CSV_PATH}`")
+    if _consumption_df is not None:
+        st.write("Consumption CSV shape:", _consumption_df.shape)
+        st.write(
+            "Consumption date range:",
+            _consumption_df["startTime"].min(),
+            "→",
+            _consumption_df["startTime"].max(),
+        )
+        try:
+            st.write("Consumption groups (first 10):",
+                     sorted(_consumption_df["consumptionGroup"].dropna().unique().tolist())[:10])
+        except Exception:
+            pass
     st.write(f"Stored coordinate: {st.session_state.get('map_coord')}")
     st.write(f"Selected price area: {st.session_state.get('price_area')}")
