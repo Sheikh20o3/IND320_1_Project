@@ -17,10 +17,13 @@ st.set_page_config(page_title="Map – Price Areas", page_icon="🗺️", layout
 st.title("Map and Energy Statistics – Norwegian Price Areas (NO1–NO5)")
 
 # ------------------------------------------------------------
-# 1. Last GeoJSON
+# 1. Paths (GeoJSON + Consumption CSV)
+#    PROJECT_ROOT tilsvarer:
+#    /Users/a.h.sheikh/Desktop/IND320_Git_Job/IND320_1_Project
 # ------------------------------------------------------------
-BASE_DIR = Path(__file__).resolve().parent.parent
-GEOJSON_PATH = BASE_DIR / "file.geojson"
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+GEOJSON_PATH = PROJECT_ROOT / "file.geojson"
+CONSUMPTION_CSV_PATH = PROJECT_ROOT / "Ass4_Rapporter" / "elhub_consumption_2021_2024_all_areas.csv"
 
 if not GEOJSON_PATH.exists():
     st.error(f"GeoJSON file not found at `{GEOJSON_PATH}`.")
@@ -72,75 +75,119 @@ st.caption(
 )
 
 # ------------------------------------------------------------
-# 3. Hent gjennomsnitt per prisområde fra MongoDB
+# 3. Datakilder
+#    - Production: MongoDB
+#    - Consumption: CSV-fil
 # ------------------------------------------------------------
 @st.cache_data(show_spinner=True)
-def fetch_means(mode: str, group: str, start_d: dt.date, end_d: dt.date) -> pd.DataFrame:
-    """Return mean quantity per price area from MongoDB."""
-    cli = get_client()
-    db = cli["elhub"]
+def load_consumption_csv(path: str) -> pd.DataFrame:
+    """Load consumption data from CSV and parse time column."""
+    df = pd.read_csv(path)
+    # Tilpass disse kolonnenavnene hvis CSV-en din heter noe annet
+    df["startTime"] = pd.to_datetime(df["startTime"])
+    return df
 
-    # Velg prefix + group-felt basert på Production / Consumption
+
+@st.cache_data(show_spinner=True)
+def fetch_means(mode: str, group: str, start_d: dt.date, end_d: dt.date) -> pd.DataFrame:
+    """
+    Return mean quantity per price area.
+
+    - Production: from MongoDB
+    - Consumption: from CSV file elhub_consumption_2021_2024_all_areas.csv
+    """
+    # -------------------------
+    # Production → MongoDB
+    # -------------------------
     if mode == "Production":
+        cli = get_client()
+        db = cli["elhub"]
+
         prefix = "production"
         group_field = "productionGroup"
-    else:
-        prefix = "consumption"
-        group_field = "consumptionGroup"
 
-    # Finn en fornuftig collection: f.eks. production_2021_by_hour, production_2021_2024_by_hour osv.
-    collection_names = db.list_collection_names()
-    candidates = [
-        name for name in collection_names
-        if name.startswith(prefix) and "hour" in name
-    ]
+        collection_names = db.list_collection_names()
+        candidates = [
+            name for name in collection_names
+            if name.startswith(prefix) and "hour" in name
+        ]
 
-    # Hvis det ikke finnes noen consumption-collections ennå, returner tomt DF i stedet for å kaste feil
-    if not candidates:
+        # Hvis du bare har production_2021_hourly_by_group er det også OK
+        if not candidates and "production_2021_hourly_by_group" in collection_names:
+            candidates = ["production_2021_hourly_by_group"]
+
+        if not candidates:
+            # Ingen passende production-collection
+            return pd.DataFrame(columns=["priceArea", "meanValue"])
+
+        coll_name = sorted(candidates, key=len, reverse=True)[0]
+        coll = db[coll_name]
+
+        start_dt = dt.datetime.combine(start_d, dt.time.min)
+        end_dt_excl = dt.datetime.combine(end_d + dt.timedelta(days=1), dt.time.min)
+
+        match_filter = {"startTime": {"$gte": start_dt, "$lt": end_dt_excl}}
+        if group != "All groups":
+            match_filter[group_field] = group
+
+        pipeline = [
+            {"$match": match_filter},
+            {
+                "$group": {
+                    "_id": "$priceArea",
+                    "meanValue": {"$avg": "$quantityKwh"},
+                }
+            },
+            {"$project": {"_id": 0, "priceArea": "$_id", "meanValue": 1}},
+        ]
+
+        docs = list(coll.aggregate(pipeline))
+        return pd.DataFrame(docs) if docs else pd.DataFrame(columns=["priceArea", "meanValue"])
+
+    # -------------------------
+    # Consumption → CSV-fil
+    # -------------------------
+    if not CONSUMPTION_CSV_PATH.exists():
+        raise FileNotFoundError(
+            f"Consumption CSV file not found at:\n`{CONSUMPTION_CSV_PATH}`"
+        )
+
+    df = load_consumption_csv(str(CONSUMPTION_CSV_PATH))
+
+    # Antatt kolonnenavn i CSV:
+    #   priceArea, startTime, consumptionGroup, quantityKwh
+    start_ts = pd.to_datetime(start_d)
+    end_ts_excl = pd.to_datetime(end_d + dt.timedelta(days=1))
+
+    mask = (df["startTime"] >= start_ts) & (df["startTime"] < end_ts_excl)
+    df_sel = df.loc[mask]
+
+    if group != "All groups":
+        df_sel = df_sel[df_sel["consumptionGroup"] == group]
+
+    if df_sel.empty:
         return pd.DataFrame(columns=["priceArea", "meanValue"])
 
-    # Ta den mest spesifikke (lengst navn)
-    coll_name = sorted(candidates, key=len, reverse=True)[0]
-    coll = db[coll_name]
-
-    # Dato-filter (antar startTime som datetime)
-    start_dt = dt.datetime.combine(start_d, dt.time.min)
-    end_dt_excl = dt.datetime.combine(end_d + dt.timedelta(days=1), dt.time.min)
-
-    match_filter = {"startTime": {"$gte": start_dt, "$lt": end_dt_excl}}
-    if group != "All groups":
-        match_filter[group_field] = group
-
-    pipeline = [
-        {"$match": match_filter},
-        {
-            "$group": {
-                "_id": "$priceArea",
-                "meanValue": {"$avg": "$quantityKwh"},
-            }
-        },
-        {"$project": {"_id": 0, "priceArea": "$_id", "meanValue": 1}},
-    ]
-
-    docs = list(coll.aggregate(pipeline))
-    return pd.DataFrame(docs) if docs else pd.DataFrame(columns=["priceArea", "meanValue"])
+    grouped = (
+        df_sel
+        .groupby("priceArea", as_index=False)["quantityKwh"]
+        .mean()
+        .rename(columns={"quantityKwh": "meanValue"})
+    )
+    return grouped
 
 
 try:
     df_stats = fetch_means(mode, group, start_date, end_date)
+except FileNotFoundError as e:
+    st.error(str(e))
+    st.stop()
 except Exception as e:
-    st.error(f"Could not fetch {mode.lower()} data from MongoDB: {e}")
+    st.error(f"Could not fetch {mode.lower()} data: {e}")
     st.stop()
 
 if df_stats.empty:
-    if mode == "Consumption":
-        st.warning(
-            "No data found for this selection.\n\n"
-            "It looks like **consumption data has not been loaded into MongoDB yet**.\n"
-            "Make sure you have collections like `consumption_2021_by_hour` or similar."
-        )
-    else:
-        st.warning("No data found for this selection.")
+    st.warning(f"No {mode.lower()} data found for this selection.")
     st.stop()
 
 value_map = df_stats.set_index("priceArea")["meanValue"].to_dict()
@@ -291,5 +338,6 @@ with st.expander("Details and debug info"):
     st.write("Mean values per price area:")
     st.dataframe(df_stats, use_container_width=True)
     st.write(f"GeoJSON path: `{GEOJSON_PATH}`")
+    st.write(f"Consumption CSV path: `{CONSUMPTION_CSV_PATH}`")
     st.write(f"Stored coordinate: {st.session_state.get('map_coord')}")
     st.write(f"Selected price area: {st.session_state.get('price_area')}")
