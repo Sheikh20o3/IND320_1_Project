@@ -7,7 +7,6 @@ import pandas as pd
 import streamlit as st
 import folium
 from streamlit_folium import st_folium
-from pymongo import MongoClient
 
 from utils_elhub import get_client, list_price_areas, list_groups
 
@@ -31,11 +30,10 @@ with GEOJSON_PATH.open("r", encoding="utf-8") as f:
     geojson_data = json.load(f)
 
 # ------------------------------------------------------------
-# 2. Datakilde-funksjoner
+# 2. Mongo-hjelpere
 # ------------------------------------------------------------
 @st.cache_data(show_spinner=True)
-def get_mongo_collections_via_utils() -> list[str]:
-    """Collections sett via utils_elhub.get_client (typisk brukt for production)."""
+def get_mongo_collections() -> list[str]:
     cli = get_client()
     db = cli["elhub"]
     return db.list_collection_names()
@@ -46,20 +44,22 @@ def load_consumption_df() -> pd.DataFrame:
     """
     Load all consumption data from MongoDB into a pandas DataFrame.
 
-    Bruker direkte kobling til localhost, database 'elhub',
-    collection 'consumption_2021_2024_by_hour'.
+    Forventer at collection 'consumption_2021_2024_by_hour' ligger
+    i samme kluster som production (via get_client()).
     """
-    client = MongoClient("mongodb://localhost:27017")
-    db = client["elhub"]
-
+    cli = get_client()
+    db = cli["elhub"]
     collection_names = db.list_collection_names()
+
     if "consumption_2021_2024_by_hour" in collection_names:
-        coll = db["consumption_2021_2024_by_hour"]
+        coll_name = "consumption_2021_2024_by_hour"
     else:
         candidates = [n for n in collection_names if n.startswith("consumption")]
         if not candidates:
             return pd.DataFrame(columns=["priceArea", "startTime", "consumptionGroup", "quantityKwh"])
-        coll = db[candidates[0]]
+        coll_name = candidates[0]
+
+    coll = db[coll_name]
 
     docs = list(
         coll.find(
@@ -83,7 +83,7 @@ def load_consumption_df() -> pd.DataFrame:
 
 @st.cache_data(show_spinner=True)
 def list_consumption_groups() -> list[str]:
-    """Distinct consumptionGroup-verdier fra Mongo (via pandas-DF)."""
+    """Distinct consumptionGroup-verdier for consumption (fra Mongo)."""
     df = load_consumption_df()
     if df.empty:
         return []
@@ -140,7 +140,7 @@ st.caption(
 )
 
 # ------------------------------------------------------------
-# 4. Hent gjennomsnitt per prisområde
+# 4. Hent gjennomsnitt per prisområde fra MongoDB
 # ------------------------------------------------------------
 @st.cache_data(show_spinner=True)
 def fetch_means(
@@ -152,17 +152,17 @@ def fetch_means(
     """
     Return mean quantity per price area.
 
-    - Production: Mongo via utils_elhub.get_client.
-    - Consumption: Mongo via direkte localhost-tilkobling, pandas-agg.
+    - Production: aggregeres i Mongo (via get_client).
+    - Consumption: hentes som DataFrame (via get_client) og aggregeres i pandas.
     """
+    cli = get_client()
+    db = cli["elhub"]
+    collection_names = db.list_collection_names()
+
     # -------------------------
-    # Production → Mongo (aggregation pipeline)
+    # Production → Mongo pipeline
     # -------------------------
     if mode == "Production":
-        cli = get_client()
-        db = cli["elhub"]
-        collection_names = db.list_collection_names()
-
         group_field = "productionGroup"
         if "production_2021_2024_by_hour" in collection_names:
             coll_name = "production_2021_2024_by_hour"
@@ -198,7 +198,7 @@ def fetch_means(
         return pd.DataFrame(docs) if docs else pd.DataFrame(columns=["priceArea", "meanValue"])
 
     # -------------------------
-    # Consumption → Mongo (pandas-agg)
+    # Consumption → pandas
     # -------------------------
     df = load_consumption_df()
     if df.empty:
@@ -385,18 +385,17 @@ with st.expander("Details and debug info"):
     st.write("Mean values per price area:")
     st.dataframe(df_stats, use_container_width=True)
     st.write(f"GeoJSON path: `{GEOJSON_PATH}`")
-    st.write("Collections via utils_elhub.get_client (typisk production-side):")
+    st.write("Mongo collections in 'elhub':")
     try:
-        st.write(get_mongo_collections_via_utils())
+        st.write(get_mongo_collections())
     except Exception as e:
         st.write(f"(could not list collections: {e})")
-    # Vis litt om consumption-siden også
     try:
         cdf = load_consumption_df()
         if not cdf.empty:
             st.write("Consumption DF shape:", cdf.shape)
             st.write("Consumption date range:", cdf["startTime"].min(), "→", cdf["startTime"].max())
-            st.write("Consumption groups:", sorted(cdf["consumptionGroup"].dropna().unique().tolist())[:10])
+            st.write("Consumption groups (first 10):", sorted(cdf["consumptionGroup"].dropna().unique().tolist())[:10])
     except Exception as e:
         st.write(f"Error loading consumption DF: {e}")
     st.write(f"Stored coordinate: {st.session_state.get('map_coord')}")
