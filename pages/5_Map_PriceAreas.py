@@ -95,11 +95,9 @@ def fetch_means(mode: str, group: str, start_d: dt.date, end_d: dt.date) -> pd.D
         if name.startswith(prefix) and "hour" in name
     ]
 
+    # Hvis det ikke finnes noen consumption-collections ennå, returner tomt DF i stedet for å kaste feil
     if not candidates:
-        raise RuntimeError(
-            f"No MongoDB collections found that start with '{prefix}' and contain 'hour'. "
-            f"Found collections: {collection_names}"
-        )
+        return pd.DataFrame(columns=["priceArea", "meanValue"])
 
     # Ta den mest spesifikke (lengst navn)
     coll_name = sorted(candidates, key=len, reverse=True)[0]
@@ -135,7 +133,14 @@ except Exception as e:
     st.stop()
 
 if df_stats.empty:
-    st.warning("No data found for this selection.")
+    if mode == "Consumption":
+        st.warning(
+            "No data found for this selection.\n\n"
+            "It looks like **consumption data has not been loaded into MongoDB yet**.\n"
+            "Make sure you have collections like `consumption_2021_by_hour` or similar."
+        )
+    else:
+        st.warning("No data found for this selection.")
     st.stop()
 
 value_map = df_stats.set_index("priceArea")["meanValue"].to_dict()
