@@ -81,10 +81,11 @@ st.caption(
 # ------------------------------------------------------------
 @st.cache_data(show_spinner=True)
 def load_consumption_csv(path: str) -> pd.DataFrame:
-    """Load consumption data from CSV and parse time column."""
-    df = pd.read_csv(path)
-    # Tilpass disse kolonnenavnene hvis CSV-en din heter noe annet
-    df["startTime"] = pd.to_datetime(df["startTime"])
+    """Load consumption data from CSV and parse time column (tz-naive)."""
+    # Leser hele CSV-en og parser startTime direkte
+    df = pd.read_csv(path, parse_dates=["startTime"])
+    # Fjern tidssone-info slik at vi får tz-naive timestamps
+    df["startTime"] = df["startTime"].dt.tz_localize(None)
     return df
 
 
@@ -228,7 +229,8 @@ def style_function(feature):
         fill_color, fill_opacity = "#cccccc", 0.2
     else:
         vmin, vmax = min(value_map.values()), max(value_map.values())
-        norm = (val - vmin) / (vmax - vmin + 1e-9)
+        denom = (vmax - vmin) if vmax != vmin else 1.0
+        norm = (val - vmin) / denom
         r = int(255 * norm)
         g = 0
         b = int(255 * (1 - norm))
