@@ -17,7 +17,7 @@ st.set_page_config(page_title="Map – Price Areas", page_icon="🗺️", layout
 st.title("Map and Energy Statistics – Norwegian Price Areas (NO1–NO5)")
 
 # ------------------------------------------------------------
-# 1. Paths (GeoJSON)
+# 1. GeoJSON-path
 # ------------------------------------------------------------
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 GEOJSON_PATH = PROJECT_ROOT / "file.geojson"
@@ -30,32 +30,64 @@ with GEOJSON_PATH.open("r", encoding="utf-8") as f:
     geojson_data = json.load(f)
 
 # ------------------------------------------------------------
-# 2. Hjelpefunksjoner for Mongo
+# 2. Datakilde-funksjoner (MongoDB)
 # ------------------------------------------------------------
 @st.cache_data(show_spinner=True)
-def get_mongo_collections() -> list[str]:
-    cli = get_client()
-    db = cli["elhub"]
-    return db.list_collection_names()
+def load_consumption_df() -> pd.DataFrame:
+    """
+    Load all consumption data from MongoDB into a pandas DataFrame.
 
-
-@st.cache_data(show_spinner=True)
-def list_consumption_groups() -> list[str]:
-    """Distinct consumptionGroup-verdier fra Mongo."""
+    Uses collection 'consumption_2021_2024_by_hour' if available,
+    otherwise the first collection whose name starts with 'consumption'.
+    """
     cli = get_client()
     db = cli["elhub"]
     collection_names = db.list_collection_names()
 
     if "consumption_2021_2024_by_hour" in collection_names:
-        coll = db["consumption_2021_2024_by_hour"]
+        coll_name = "consumption_2021_2024_by_hour"
     else:
         candidates = [n for n in collection_names if n.startswith("consumption")]
         if not candidates:
-            return []
-        coll = db[candidates[0]]
+            return pd.DataFrame(columns=["priceArea", "startTime", "consumptionGroup", "quantityKwh"])
+        coll_name = candidates[0]
 
-    groups = coll.distinct("consumptionGroup")
-    return sorted(g for g in groups if g)
+    coll = db[coll_name]
+
+    docs = list(
+        coll.find(
+            {},
+            {
+                "_id": 0,
+                "priceArea": 1,
+                "startTime": 1,
+                "consumptionGroup": 1,
+                "quantityKwh": 1,
+            },
+        )
+    )
+    if not docs:
+        return pd.DataFrame(columns=["priceArea", "startTime", "consumptionGroup", "quantityKwh"])
+
+    df = pd.DataFrame(docs)
+    df["startTime"] = pd.to_datetime(df["startTime"])
+    return df
+
+
+@st.cache_data(show_spinner=True)
+def list_consumption_groups() -> list[str]:
+    """Distinct consumptionGroup-verdier fra Mongo (via pandas-DF)."""
+    df = load_consumption_df()
+    if df.empty:
+        return []
+    return sorted(df["consumptionGroup"].dropna().unique().tolist())
+
+
+@st.cache_data(show_spinner=True)
+def get_mongo_collections() -> list[str]:
+    cli = get_client()
+    db = cli["elhub"]
+    return db.list_collection_names()
 
 
 # ------------------------------------------------------------
@@ -109,6 +141,8 @@ st.caption(
 
 # ------------------------------------------------------------
 # 4. Hent gjennomsnitt per prisområde fra MongoDB
+#    - Production: aggregeres i Mongo
+#    - Consumption: lastes én gang til pandas og filtreres der
 # ------------------------------------------------------------
 @st.cache_data(show_spinner=True)
 def fetch_means(
@@ -117,19 +151,15 @@ def fetch_means(
     start_d: dt.date,
     end_d: dt.date,
 ) -> pd.DataFrame:
-    """
-    Return mean quantity per price area from MongoDB.
-
-    - Production: production_2021_2024_by_hour / production_2021_hourly_by_group
-    - Consumption: consumption_2021_2024_by_hour
-    """
     cli = get_client()
     db = cli["elhub"]
     collection_names = db.list_collection_names()
 
+    # -------------------------
+    # Production → Mongo (aggregation pipeline)
+    # -------------------------
     if mode == "Production":
         group_field = "productionGroup"
-        # Foretrukket rekkefølge
         if "production_2021_2024_by_hour" in collection_names:
             coll_name = "production_2021_2024_by_hour"
         elif "production_2021_hourly_by_group" in collection_names:
@@ -139,44 +169,62 @@ def fetch_means(
             if not candidates:
                 return pd.DataFrame(columns=["priceArea", "meanValue"])
             coll_name = candidates[0]
-    else:
-        group_field = "consumptionGroup"
-        if "consumption_2021_2024_by_hour" in collection_names:
-            coll_name = "consumption_2021_2024_by_hour"
-        else:
-            candidates = [n for n in collection_names if n.startswith("consumption")]
-            if not candidates:
-                return pd.DataFrame(columns=["priceArea", "meanValue"])
-            coll_name = candidates[0]
 
-    coll = db[coll_name]
+        coll = db[coll_name]
 
-    start_dt = dt.datetime.combine(start_d, dt.time.min)
-    end_dt_excl = dt.datetime.combine(end_d + dt.timedelta(days=1), dt.time.min)
+        start_dt = dt.datetime.combine(start_d, dt.time.min)
+        end_dt_excl = dt.datetime.combine(end_d + dt.timedelta(days=1), dt.time.min)
 
-    match_filter = {"startTime": {"$gte": start_dt, "$lt": end_dt_excl}}
+        match_filter = {"startTime": {"$gte": start_dt, "$lt": end_dt_excl}}
+        if group != "All groups":
+            match_filter[group_field] = group
+
+        pipeline = [
+            {"$match": match_filter},
+            {
+                "$group": {
+                    "_id": "$priceArea",
+                    "meanValue": {"$avg": "$quantityKwh"},
+                }
+            },
+            {"$project": {"_id": 0, "priceArea": "$_id", "meanValue": 1}},
+        ]
+
+        docs = list(coll.aggregate(pipeline))
+        return pd.DataFrame(docs) if docs else pd.DataFrame(columns=["priceArea", "meanValue"])
+
+    # -------------------------
+    # Consumption → pandas (hele collection inn, filtrer lokalt)
+    # -------------------------
+    df = load_consumption_df()
+    if df.empty:
+        return pd.DataFrame(columns=["priceArea", "meanValue"])
+
+    start_ts = pd.to_datetime(start_d)
+    end_ts_excl = pd.to_datetime(end_d + dt.timedelta(days=1))
+
+    mask = (df["startTime"] >= start_ts) & (df["startTime"] < end_ts_excl)
+    df_sel = df.loc[mask]
+
     if group != "All groups":
-        match_filter[group_field] = group
+        df_sel = df_sel[df_sel["consumptionGroup"] == group]
 
-    pipeline = [
-        {"$match": match_filter},
-        {
-            "$group": {
-                "_id": "$priceArea",
-                "meanValue": {"$avg": "$quantityKwh"},
-            }
-        },
-        {"$project": {"_id": 0, "priceArea": "$_id", "meanValue": 1}},
-    ]
+    if df_sel.empty:
+        return pd.DataFrame(columns=["priceArea", "meanValue"])
 
-    docs = list(coll.aggregate(pipeline))
-    return pd.DataFrame(docs) if docs else pd.DataFrame(columns=["priceArea", "meanValue"])
+    grouped = (
+        df_sel
+        .groupby("priceArea", as_index=False)["quantityKwh"]
+        .mean()
+        .rename(columns={"quantityKwh": "meanValue"})
+    )
+    return grouped
 
 
 try:
     df_stats = fetch_means(mode, group, start_date, end_date)
 except Exception as e:
-    st.error(f"Could not fetch {mode.lower()} data from MongoDB: {e}")
+    st.error(f"Could not fetch {mode.lower()} data: {e}")
     st.stop()
 
 if df_stats.empty:
