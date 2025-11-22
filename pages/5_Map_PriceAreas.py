@@ -2,6 +2,7 @@
 import json
 import datetime as dt
 from pathlib import Path
+
 import pandas as pd
 import streamlit as st
 import folium
@@ -34,6 +35,9 @@ with GEOJSON_PATH.open("r", encoding="utf-8") as f:
 try:
     areas_from_db = list_price_areas()
 except Exception:
+    areas_from_db = ["NO1", "NO2", "NO3", "NO4", "NO5"]
+
+if not areas_from_db:
     areas_from_db = ["NO1", "NO2", "NO3", "NO4", "NO5"]
 
 default_area = areas_from_db[0]
@@ -72,19 +76,36 @@ st.caption(
 # ------------------------------------------------------------
 @st.cache_data(show_spinner=True)
 def fetch_means(mode: str, group: str, start_d: dt.date, end_d: dt.date) -> pd.DataFrame:
-    """Return mean quantity per price area."""
+    """Return mean quantity per price area from MongoDB."""
     cli = get_client()
     db = cli["elhub"]
 
+    # Velg prefix + group-felt basert på Production / Consumption
     if mode == "Production":
-        coll_name = "production_2021_by_hour"
+        prefix = "production"
         group_field = "productionGroup"
     else:
-        coll_name = "consumption_2021_by_hour"
+        prefix = "consumption"
         group_field = "consumptionGroup"
 
+    # Finn en fornuftig collection: f.eks. production_2021_by_hour, production_2021_2024_by_hour osv.
+    collection_names = db.list_collection_names()
+    candidates = [
+        name for name in collection_names
+        if name.startswith(prefix) and "hour" in name
+    ]
+
+    if not candidates:
+        raise RuntimeError(
+            f"No MongoDB collections found that start with '{prefix}' and contain 'hour'. "
+            f"Found collections: {collection_names}"
+        )
+
+    # Ta den mest spesifikke (lengst navn)
+    coll_name = sorted(candidates, key=len, reverse=True)[0]
     coll = db[coll_name]
 
+    # Dato-filter (antar startTime som datetime)
     start_dt = dt.datetime.combine(start_d, dt.time.min)
     end_dt_excl = dt.datetime.combine(end_d + dt.timedelta(days=1), dt.time.min)
 
@@ -107,7 +128,11 @@ def fetch_means(mode: str, group: str, start_d: dt.date, end_d: dt.date) -> pd.D
     return pd.DataFrame(docs) if docs else pd.DataFrame(columns=["priceArea", "meanValue"])
 
 
-df_stats = fetch_means(mode, group, start_date, end_date)
+try:
+    df_stats = fetch_means(mode, group, start_date, end_date)
+except Exception as e:
+    st.error(f"Could not fetch {mode.lower()} data from MongoDB: {e}")
+    st.stop()
 
 if df_stats.empty:
     st.warning("No data found for this selection.")
@@ -121,24 +146,25 @@ st.info(
 )
 
 # ------------------------------------------------------------
-# 4. Bygg kart
+# 4. Kart + klikk-håndtering i ett
 # ------------------------------------------------------------
 center = [64.5, 11.0]
 m = folium.Map(location=center, zoom_start=5, tiles="CartoDB positron")
 
-selected_area = st.session_state.get("price_area")  # valgt globalt på andre sider
-clicked_coord = st.session_state.get("map_coord")
-
 def normalize_area(raw: str) -> str:
     return raw.strip().replace(" ", "") if isinstance(raw, str) else ""
 
-# Dynamisk fargestil
+# Les nåværende valg fra session_state (kan komme fra andre sider)
+selected_area = st.session_state.get("price_area")
+stored_coord = st.session_state.get("map_coord")
+
+# Dynamisk fargestil (farge = meanValue, omriss = valgt område)
 def style_function(feature):
     props = feature.get("properties", {})
     raw_code = props.get("ElSpotOmr", "")
     area_code = normalize_area(raw_code)
 
-    # Outline
+    # Outline (bare valgt område får rød kant)
     if area_code == selected_area:
         outline_color, weight = "red", 4
     else:
@@ -163,7 +189,7 @@ def style_function(feature):
         "fillOpacity": fill_opacity,
     }
 
-# Tegn hovedkart
+# GeoJSON-lag (choropleth + hover)
 folium.GeoJson(
     geojson_data,
     name="Elspot Areas",
@@ -174,43 +200,84 @@ folium.GeoJson(
     ),
 ).add_to(m)
 
-# ------------------------------------------------------------
-# 5. Klikk-håndtering (én klikk nok)
-# ------------------------------------------------------------
-click_data = st_folium(m, height=600, width="100%", returned_objects=["last_clicked"])
-
-if click_data and click_data.get("last_clicked"):
-    lat = click_data["last_clicked"]["lat"]
-    lon = click_data["last_clicked"]["lng"]
-    st.session_state["map_coord"] = (lat, lon)
-    st.success(f"📍 Coordinate selected: ({lat:.4f}, {lon:.4f})")
-
-    # Marker posisjonen på kartet
+# Hvis vi allerede har en koordinat, legg inn marker + vis den til brukeren
+if stored_coord:
+    lat, lon = stored_coord
     folium.Marker(
         [lat, lon],
         icon=folium.Icon(color="red", icon="map-marker"),
         popup=f"Selected coordinate\n({lat:.4f}, {lon:.4f})",
     ).add_to(m)
 
-    # Oppdater valgt område basert på nærmeste polygon (enkel sjekk)
-    for feature in geojson_data["features"]:
-        area_name = normalize_area(feature["properties"].get("ElSpotOmr", ""))
-        geom = feature["geometry"]
-        if geom["type"] == "Polygon":
-            for coords in geom["coordinates"]:
-                poly = folium.vector_layers.Polygon(locations=[(y, x) for x, y in coords])
-                if any(abs(lat - y) < 1 and abs(lon - x) < 1 for x, y in coords):
-                    st.session_state["price_area"] = area_name
-                    selected_area = area_name
-                    break
+    st.info(
+        f"📍 Stored coordinate from map: **({lat:.4f}, {lon:.4f})**\n\n"
+        "These coordinates will be used on the Snow Drift page."
+    )
 
-    st.write(f"🔹 Selected price area: **{selected_area}**")
+    # Lett å kopiere rett inn i Snow Drift-siden
+    st.code(f"{lat:.6f}, {lon:.6f}", language="text")
 
-    # Tegn kartet på nytt med oppdatert omriss
-    st_folium(m, height=600, width="100%", key="updated_map")
+    if selected_area:
+        st.write(f"🔹 Selected price area: **{selected_area}**")
 
 else:
     st.caption("Click once on the map to select a coordinate and price area.")
+
+# Vis kartet (ÉN gang)
+map_data = st_folium(
+    m,
+    height=600,
+    width="100%",
+    key="main_map",
+    returned_objects=["last_clicked"],
+)
+
+# ------------------------------------------------------------
+# 5. Oppdater session_state ved nytt klikk (slipper dobbeltklikk)
+# ------------------------------------------------------------
+def find_price_area(lat, lon, geojson):
+    """Enkel bounding box-sjekk for å finne prisområde for et punkt."""
+    for feature in geojson["features"]:
+        area_name = normalize_area(feature.get("properties", {}).get("ElSpotOmr", ""))
+        geom = feature.get("geometry", {})
+        gtype = geom.get("type")
+        coords_root = geom.get("coordinates", [])
+
+        # Normaliser til liste over ringer
+        if gtype == "Polygon":
+            rings = coords_root
+        elif gtype == "MultiPolygon":
+            rings = [ring for poly in coords_root for ring in poly]
+        else:
+            continue
+
+        for ring in rings:
+            lons = [c[0] for c in ring]
+            lats = [c[1] for c in ring]
+            # Enkel "inne i bounding box"-test
+            if (min(lats) <= lat <= max(lats)) and (min(lons) <= lon <= max(lons)):
+                return area_name
+
+    return None
+
+
+if map_data and map_data.get("last_clicked"):
+    last_clicked = map_data["last_clicked"]
+    lat = last_clicked["lat"]
+    lon = last_clicked["lng"]
+
+    old_coord = st.session_state.get("map_coord")
+
+    # Bare gjør noe hvis koordinaten faktisk er ny (hindrer evig rerun-loop)
+    if (not old_coord) or (abs(old_coord[0] - lat) > 1e-6 or abs(old_coord[1] - lon) > 1e-6):
+        area_name = find_price_area(lat, lon, geojson_data)
+
+        st.session_state["map_coord"] = (lat, lon)
+        if area_name:
+            st.session_state["price_area"] = area_name
+
+        # Tving ny kjøring slik at kartet tegnes opp igjen med oppdatert outline + marker
+        st.rerun()
 
 # ------------------------------------------------------------
 # 6. Info/debug
