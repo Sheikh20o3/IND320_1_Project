@@ -128,15 +128,3 @@ with right:
         st.plotly_chart(fig2, use_container_width=True)
 
 
-# --- Documentation section ---
-with st.expander("Sources and method"):
-    st.markdown(
-        """
-- **Source:** Elhub API – dataset `PRODUCTION_PER_GROUP_MBA_HOUR` (2021).
-- Raw data is fetched, normalized, and stored in **Cassandra**.
-- Then extracted with **Spark** to the columns: `priceArea`, `productionGroup`, `startTime`, `quantityKwh`.
-- The same data is loaded into **MongoDB** (`elhub.production_2021_by_hour`) and displayed here.
-- The pie chart shows **total** production per group for the selected price area (all of 2021).
-- The line chart shows **hourly** values for the selected month, price area, and production groups.
-"""
-    )
